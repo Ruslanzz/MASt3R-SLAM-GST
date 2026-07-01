@@ -83,9 +83,17 @@ target_link_libraries(nvdsmast3rslam PRIVATE
   nvbufsurface
 )
 
+# The __CUDA_NO_HALF*_ macros mirror what torch.utils.cpp_extension passes to
+# nvcc: they disable CUDA's built-in __half/__nv_bfloat16 operators so the
+# reused kernels use c10::Half's operators unambiguously (otherwise `score >
+# max_score` on c10::Half is an ambiguous overload with CUDA 12.x).
 target_compile_options(nvdsmast3rslam PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall -O2>
-  $<$<COMPILE_LANGUAGE:CUDA>:-O3>
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3
+    -D__CUDA_NO_HALF_OPERATORS__
+    -D__CUDA_NO_HALF_CONVERSIONS__
+    -D__CUDA_NO_HALF2_OPERATORS__
+    -D__CUDA_NO_BFLOAT16_CONVERSIONS__>
 )
 
 # Install into the GStreamer plugin path so gst-inspect-1.0 finds it.
