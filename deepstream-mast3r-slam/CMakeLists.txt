@@ -33,7 +33,11 @@ set(KERNEL_SRC
   ${REPO_ROOT}/mast3r_slam/backend/src/matching_kernels.cu
 )
 
-set(CMAKE_CUDA_ARCHITECTURES 80 86 89)
+# GTX 1660 Ti is Turing, compute capability 7.5. Override with -DCMAKE_CUDA_ARCHITECTURES
+# for other GPUs (80=Ampere A100, 86=RTX 30xx, 89=Ada).
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES 75)
+endif()
 
 add_library(nvdsmast3rslam SHARED
   gst-plugin/gstnvdsmast3rslam.cpp

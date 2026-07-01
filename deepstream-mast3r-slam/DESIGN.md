@@ -96,18 +96,24 @@
 строит сам алгоритм). Источник любой: v4l2 / файл / UDP-RTSP — через
 `nvurisrcbin`/`uridecodebin3`/`v4l2src` → `nvstreammux(batch-size=1)`.
 
-## 6. Сборка
+## 6. Сборка (эта ветка — GTX 1660 Ti / DeepStream 7.1)
 
-`gst-nvinfer` — часть DeepStream 9.0; пересобирать его не нужно. Собираем только
-наш элемент + SLAM-ядро (CMake, линкуясь с GStreamer 1.24, DeepStream
-`nvds_meta`/`nvdsinfer`, TensorRT, CUDA и libtorch). Всё — в Docker на базе
-DeepStream 9.0 (см. `docker/Dockerfile`).
+Эта ветка нацелена на **NVIDIA GeForce GTX 1660 Ti** (Turing, sm_75, 6 ГБ).
+Базовый образ — **DeepStream 7.1** (GStreamer 1.20, CUDA 12.6, TensorRT 10.3):
+это самая новая DeepStream, ещё поддерживающая Turing на x86 dGPU. `gst-nvinfer`
+входит в DeepStream, пересобирать его не нужно. Собираем только наш элемент +
+SLAM-ядро (CMake, `-DCMAKE_CUDA_ARCHITECTURES=75`, линкуясь с GStreamer,
+DeepStream `nvds_meta`/`nvdsinfer`, TensorRT, CUDA и libtorch). Всё — в Docker
+на базе DeepStream 7.1 (см. `docker/Dockerfile`, `BUILD.md`).
 
 ## 7. Ограничения / статус
 
 * Это **нативный DeepStream-проект**: его нельзя собрать/проверить без SDK
-  DeepStream 9.0, TensorRT, CUDA и libtorch на целевой машine с GPU. Код написан
+  DeepStream 7.1, TensorRT, CUDA и libtorch на целевой машине с GPU. Код написан
   по конвенциям gst-nvinfer/`dsexample` и снабжён комментариями о точках сборки.
+* На 6 ГБ 1660 Ti практический дефолт — **FP16**-движки (FP32 может не влезть).
+  Turing (TU116) без тензорных ядер → FP16 экономит память, но не даёт кратного
+  ускорения; на ViT-Large ждите скромный FPS.
 * Бит-в-бит совпадение с эталоном недостижимо при FP16/INT8 TRT-движках
   (численность меняется). Для максимальной близости стройте движки в FP32.
 * SLAM-ядро переиспользует CUDA-ядра репозитория через libtorch C++ API;

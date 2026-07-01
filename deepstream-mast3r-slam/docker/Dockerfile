@@ -1,17 +1,23 @@
-# Native C++ DeepStream plugin (nvdsmast3rslam) built on DeepStream 9.0.
+# Native C++ DeepStream plugin (nvdsmast3rslam) for NVIDIA GeForce GTX 1660 Ti.
 #
-# DeepStream 9.0 (Ubuntu 24.04) provides GStreamer 1.24, the official NVIDIA
-# elements (incl. gst-nvinfer), CUDA 12.x and TensorRT 10.x. We additionally
-# install libtorch (to reuse the repo's CUDA kernels and the SLAM math) and
-# build our element + SLAM core with CMake.
+# The GTX 1660 Ti is a Turing GPU (compute capability 7.5, 6 GB, no tensor cores).
+# The newest DeepStream that still supports Turing on x86 dGPU is DeepStream 7.1
+# (Ubuntu 22.04, GStreamer 1.20, CUDA 12.6, TensorRT 10.3, driver >= 560). Newer
+# releases may drop Turing, so 7.1 is the safe maximum for this card.
 #
-# NOTE: substitute a real NGC tag if 9.0 is not yet published to you. Use a
-# *devel*/*triton* variant so nvcc + dev headers are present.
-ARG BASE_IMAGE=nvcr.io/nvidia/deepstream:9.0-triton-multiarch
+# If a later DeepStream release still lists Turing/sm_75 in its support matrix,
+# bump BASE_IMAGE — CUDA arch stays 75.
+ARG BASE_IMAGE=nvcr.io/nvidia/deepstream:7.1-triton-multiarch
 FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
+# Torch cu124 wheels run fine on the container's CUDA 12.6 runtime and include
+# Turing (sm_75) kernels.
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+# Turing compute capability for our CUDA kernels + torch extension build.
+ARG CUDA_ARCH=75
+ARG TORCH_CUDA_ARCH_LIST=7.5
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git build-essential cmake ninja-build pkg-config \
@@ -20,8 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# libtorch (C++). Using the pip wheel and exporting its cmake prefix is the
-# simplest way to get a CUDA-matched libtorch + headers.
+# libtorch (C++) via the pip wheel; export its cmake prefix for our build.
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
     python3 -m pip install --no-cache-dir torch==2.5.1 --index-url ${TORCH_INDEX_URL}
 
@@ -29,10 +34,11 @@ WORKDIR /opt/MASt3R-SLAM-GST
 COPY . /opt/MASt3R-SLAM-GST
 RUN git submodule update --init --recursive || true
 
-# Build the plugin. Torch_DIR points cmake at the pip libtorch.
+# Build the plugin for Turing (sm_75). Torch_DIR points cmake at the pip libtorch.
 RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"share","cmake","Torch"))')" && \
     cmake -S deepstream-mast3r-slam -B /tmp/build -GNinja \
         -DTorch_DIR="${Torch_DIR}" \
+        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} \
         -DCMAKE_BUILD_TYPE=Release && \
     cmake --build /tmp/build -j && \
     cp /tmp/build/libnvdsmast3rslam.so /opt/nvidia/deepstream/deepstream/lib/gstreamer-1.0/ && \

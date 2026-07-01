@@ -12,6 +12,12 @@ matching + Sim3 tracking + factor-graph backend, attaches the camera pose as
 > [`DESIGN.md`](DESIGN.md). This is the C/C++ / gst-nvinfer counterpart of the
 > Python plugin on branch `claude/gstreamer-cuda-tensorrt-plugin-g29qxg`.
 
+> **This branch targets the NVIDIA GeForce GTX 1660 Ti (Turing, sm_75, 6 GB).**
+> It builds on **DeepStream 7.1** — the newest DeepStream that still supports
+> Turing on x86 dGPU (GStreamer 1.20, CUDA 12.6, TensorRT 10.3, driver ≥ 560).
+> CUDA arch is fixed to `75`, FP16 engines are the default (6 GB), and there are
+> memory tips for long sequences. Full step-by-step: **[`BUILD.md`](BUILD.md)**.
+
 ```
  source ─▶ nvstreammux(batch=1) ─▶ nvinfer (MASt3R encoder, TRT)
                                        │ NvDsInferTensorMeta(feat,pos)
@@ -40,33 +46,34 @@ deepstream-mast3r-slam/
 │   └── config_infer_mast3r_encoder.txt   # gst-nvinfer config (encoder)
 ├── tools/
 │   └── export_onnx.py               # export encoder + decoder ONNX
-├── docker/                          # Dockerfile (DeepStream 9.0) + build.sh
+├── docker/                          # Dockerfile (DeepStream 7.1, sm_75) + build.sh
 └── pipelines/                       # run_file / run_v4l2 / run_udp
 ```
 
-## Build (DeepStream 9.0)
+## Build (DeepStream 7.1, GTX 1660 Ti)
 
 ```bash
 # from the repo root, submodules initialised, checkpoints/ present
-bash deepstream-mast3r-slam/docker/build.sh
+bash deepstream-mast3r-slam/docker/build.sh          # base: deepstream:7.1, arch sm_75
 docker run --rm -it --gpus all --runtime nvidia \
-    -v "$PWD:/opt/MASt3R-SLAM-GST" nvdsmast3rslam:ds9.0 bash
+    -v "$PWD:/opt/MASt3R-SLAM-GST" nvdsmast3rslam:ds7.1-gtx1660ti bash
 # inside: the .so is already in the GStreamer plugin path
 gst-inspect-1.0 nvdsmast3rslam
 ```
 
-The image installs libtorch, then CMake compiles `nvdsmast3rslam` and **reuses
-the repository's CUDA kernels** (`mast3r_slam/backend/src/*.cu`) directly. To
-rebuild after edits: `bash deepstream-mast3r-slam/build_local.sh`.
+The image installs libtorch, then CMake compiles `nvdsmast3rslam` for Turing
+(`-DCMAKE_CUDA_ARCHITECTURES=75`) and **reuses the repository's CUDA kernels**
+(`mast3r_slam/backend/src/*.cu`) directly. To rebuild after edits:
+`bash deepstream-mast3r-slam/build_local.sh`. Full guide: [`BUILD.md`](BUILD.md).
 
 ## Prepare engines
 
 ```bash
 # 1) export ONNX (encoder + decoder)
 python deepstream-mast3r-slam/tools/export_onnx.py --height 384 --width 512
-# 2) build TensorRT engines (FP32 for best parity with the reference)
-trtexec --onnx=checkpoints/mast3r_encoder.onnx --saveEngine=checkpoints/mast3r_encoder.engine
-trtexec --onnx=checkpoints/mast3r_decoder.onnx --saveEngine=checkpoints/mast3r_decoder.engine
+# 2) build TensorRT engines — FP16 on the 6 GB 1660 Ti (FP32 needs more VRAM)
+trtexec --onnx=checkpoints/mast3r_encoder.onnx --saveEngine=checkpoints/mast3r_encoder.engine --fp16 --memPoolSize=workspace:2048
+trtexec --onnx=checkpoints/mast3r_decoder.onnx --saveEngine=checkpoints/mast3r_decoder.engine --fp16 --memPoolSize=workspace:2048
 ```
 
 ## Run
