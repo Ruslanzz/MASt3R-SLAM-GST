@@ -22,6 +22,15 @@ find_package(CUDAToolkit REQUIRED)
 find_package(Torch REQUIRED)
 find_package(Eigen3 QUIET)
 
+# The reused .cu kernels pull in torch/extension.h -> torch/python.h -> <Python.h>.
+# python3-dev installs it under /usr/include/python3.X (a sub-dir not on the
+# default search path), so add that dir explicitly. No libpython linking needed:
+# the kernels only use torch::Tensor, not the Python C-API.
+execute_process(
+  COMMAND python3 -c "import sysconfig; print(sysconfig.get_path('include'))"
+  OUTPUT_VARIABLE PYTHON_INCLUDE_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
+message(STATUS "Python include dir: ${PYTHON_INCLUDE_DIR}")
+
 set(EIGEN_INCLUDE "${REPO_ROOT}/thirdparty/eigen")
 if(Eigen3_FOUND)
   set(EIGEN_INCLUDE ${EIGEN3_INCLUDE_DIR})
@@ -56,6 +65,7 @@ target_include_directories(nvdsmast3rslam PRIVATE
   ${DEEPSTREAM_DIR}/sources/includes
   ${TENSORRT_DIR}
   ${TORCH_INCLUDE_DIRS}
+  ${PYTHON_INCLUDE_DIR}
 )
 
 target_link_directories(nvdsmast3rslam PRIVATE
