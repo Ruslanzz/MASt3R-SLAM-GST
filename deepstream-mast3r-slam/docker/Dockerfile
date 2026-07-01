@@ -21,7 +21,7 @@ ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git build-essential cmake ninja-build pkg-config \
-        python3 python3-pip \
+        python3 python3-pip python3-dev \
         libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
         libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*

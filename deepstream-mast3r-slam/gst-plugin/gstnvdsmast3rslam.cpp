@@ -14,10 +14,16 @@
 
 #include <cstring>
 
-#include "gstnvdsinfer.h"
+#include "gstnvdsinfer.h"   // NvDsInferTensorMeta + NVDSINFER_TENSOR_OUTPUT_META
 #include "gstnvdsmeta.h"
-#include "nvdsinfer_tensor_meta.h"
 #include "nvdsmeta.h"
+// Older DeepStream shipped a separate nvdsinfer_tensor_meta.h; on DS 7.x the
+// tensor meta lives in gstnvdsinfer.h. Include it only if present.
+#if defined(__has_include)
+#  if __has_include("nvdsinfer_tensor_meta.h")
+#    include "nvdsinfer_tensor_meta.h"
+#  endif
+#endif
 
 #include "mast3r_slam_core.h"
 #include "mast3r_slam_meta.h"
