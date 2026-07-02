@@ -50,11 +50,28 @@ endif()
 
 add_library(nvdsmast3rslam SHARED
   gst-plugin/gstnvdsmast3rslam.cpp
+  gst-plugin/gstnvdsmast3rviz.cpp
   lib/mast3r_slam_core.cpp
   lib/trt_engine.cpp
   lib/io.cpp
   ${KERNEL_SRC}
 )
+
+# Optional ROS 2 bridge in nvdsmast3rviz (Odometry/Path/TF/PointCloud2).
+# Requires ROS 2 Humble packages; configure with
+#   -DWITH_ROS2=ON -DCMAKE_PREFIX_PATH=/opt/ros/humble
+option(WITH_ROS2 "Build the ROS 2 bridge into nvdsmast3rviz" OFF)
+if(WITH_ROS2)
+  find_package(rclcpp REQUIRED)
+  find_package(nav_msgs REQUIRED)
+  find_package(sensor_msgs REQUIRED)
+  find_package(geometry_msgs REQUIRED)
+  find_package(tf2_ros REQUIRED)
+  target_compile_definitions(nvdsmast3rslam PRIVATE WITH_ROS2)
+  target_link_libraries(nvdsmast3rslam PRIVATE
+    rclcpp::rclcpp tf2_ros::tf2_ros
+    ${nav_msgs_TARGETS} ${sensor_msgs_TARGETS} ${geometry_msgs_TARGETS})
+endif()
 
 target_include_directories(nvdsmast3rslam PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/gst-plugin

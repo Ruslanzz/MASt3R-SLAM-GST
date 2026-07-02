@@ -13,6 +13,7 @@
 #include "gstnvdsmast3rslam.h"
 
 #include <cstring>
+#include <vector>
 
 #include "gstnvdsinfer.h"   // NvDsInferTensorMeta + NVDSINFER_TENSOR_OUTPUT_META
 #include "gstnvdsmeta.h"
@@ -48,6 +49,8 @@ enum {
   PROP_RIGHT_SOURCE_ID,
   PROP_LOOP_CLOSURE,
   PROP_LOOP_SIM_THRESH,
+  PROP_EMIT_CLOUD,
+  PROP_CLOUD_MAX_POINTS,
 };
 
 /* gst-nvinfer feeds us NVMM video; we negotiate RGBA (set by nvvideoconvert) but
@@ -169,6 +172,18 @@ static void gst_nvdsmast3rslam_class_init(GstNvDsMast3rSlamClass *klass) {
       g_param_spec_double("loop-sim-thresh", "loop-sim-thresh",
                           "Cosine similarity threshold for loop candidates",
                           0.0, 1.0, 0.90, (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_EMIT_CLOUD,
+      g_param_spec_boolean("emit-cloud", "emit-cloud",
+                           "Attach the keyframe map as NvDsMast3rSlamCloudMeta "
+                           "on keyframe frames (for nvdsmast3rviz / ROS)",
+                           TRUE, (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_CLOUD_MAX_POINTS,
+      g_param_spec_int("cloud-max-points", "cloud-max-points",
+                       "Stride the emitted keyframe cloud down to this many "
+                       "points", 100, 500000, 50000,
+                       (GParamFlags)G_PARAM_READWRITE));
 
   gst_element_class_set_static_metadata(
       element_class, "MASt3R-SLAM", "Filter/Analyzer/Video",
@@ -198,6 +213,8 @@ static void gst_nvdsmast3rslam_init(GstNvDsMast3rSlam *self) {
   self->right_source_id = 1;
   self->loop_closure = TRUE;
   self->loop_sim_thresh = 0.90;
+  self->emit_cloud = TRUE;
+  self->cloud_max_points = 50000;
   self->core = nullptr;
   self->frame_num = 0;
   self->video_info_valid = FALSE;
@@ -246,6 +263,8 @@ static void gst_nvdsmast3rslam_set_property(GObject *object, guint prop_id,
     case PROP_RIGHT_SOURCE_ID: self->right_source_id = g_value_get_int(value); break;
     case PROP_LOOP_CLOSURE: self->loop_closure = g_value_get_boolean(value); break;
     case PROP_LOOP_SIM_THRESH: self->loop_sim_thresh = g_value_get_double(value); break;
+    case PROP_EMIT_CLOUD: self->emit_cloud = g_value_get_boolean(value); break;
+    case PROP_CLOUD_MAX_POINTS: self->cloud_max_points = g_value_get_int(value); break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
   }
 }
@@ -269,6 +288,8 @@ static void gst_nvdsmast3rslam_get_property(GObject *object, guint prop_id,
     case PROP_RIGHT_SOURCE_ID: g_value_set_int(value, self->right_source_id); break;
     case PROP_LOOP_CLOSURE: g_value_set_boolean(value, self->loop_closure); break;
     case PROP_LOOP_SIM_THRESH: g_value_set_double(value, self->loop_sim_thresh); break;
+    case PROP_EMIT_CLOUD: g_value_set_boolean(value, self->emit_cloud); break;
+    case PROP_CLOUD_MAX_POINTS: g_value_set_int(value, self->cloud_max_points); break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
   }
 }
@@ -376,6 +397,52 @@ static void attach_pose_meta(NvDsBatchMeta *batch_meta, NvDsFrameMeta *frame_met
   nvds_add_user_meta_to_frame(frame_meta, user_meta);
 }
 
+static void cloud_release_func(gpointer data, gpointer /*user_data*/) {
+  if (!data) return;
+  NvDsUserMeta *um = (NvDsUserMeta *)data;
+  NvDsMast3rSlamCloudMeta *cm = (NvDsMast3rSlamCloudMeta *)um->user_meta_data;
+  if (cm) {
+    g_free(cm->points);
+    g_free(cm);
+  }
+  um->user_meta_data = nullptr;
+}
+
+static gpointer cloud_copy_func(gpointer data, gpointer /*user_data*/) {
+  NvDsUserMeta *um = (NvDsUserMeta *)data;
+  NvDsMast3rSlamCloudMeta *src = (NvDsMast3rSlamCloudMeta *)um->user_meta_data;
+  NvDsMast3rSlamCloudMeta *dst =
+      (NvDsMast3rSlamCloudMeta *)g_malloc0(sizeof(NvDsMast3rSlamCloudMeta));
+  dst->keyframe_id = src->keyframe_id;
+  dst->num_points = src->num_points;
+  size_t bytes = (size_t)src->num_points * 3 * sizeof(float);
+  dst->points = (float *)g_malloc(bytes);
+  memcpy(dst->points, src->points, bytes);
+  return dst;
+}
+
+/* Attach the newest keyframe's world-frame cloud (for nvdsmast3rviz / ROS). */
+static void attach_cloud_meta(GstNvDsMast3rSlam *self, NvDsBatchMeta *batch_meta,
+                              NvDsFrameMeta *frame_meta) {
+  std::vector<float> xyz;
+  uint64_t kf_id = 0;
+  if (!self->core->copyLatestKeyframeCloud(self->cloud_max_points, xyz, kf_id))
+    return;
+  NvDsUserMeta *um = nvds_acquire_user_meta_from_pool(batch_meta);
+  if (!um) return;
+  NvDsMast3rSlamCloudMeta *cm =
+      (NvDsMast3rSlamCloudMeta *)g_malloc0(sizeof(NvDsMast3rSlamCloudMeta));
+  cm->keyframe_id = kf_id;
+  cm->num_points = (uint32_t)(xyz.size() / 3);
+  cm->points = (float *)g_malloc(xyz.size() * sizeof(float));
+  memcpy(cm->points, xyz.data(), xyz.size() * sizeof(float));
+  um->user_meta_data = cm;
+  um->base_meta.meta_type = (NvDsMetaType)NVDS_MAST3R_SLAM_CLOUD_META;
+  um->base_meta.copy_func = cloud_copy_func;
+  um->base_meta.release_func = cloud_release_func;
+  nvds_add_user_meta_to_frame(frame_meta, um);
+}
+
 /* Build a FrameInput from a frame's encoder tensor meta. Returns FALSE if the
  * tensor meta (or feat/pos layers) is missing. */
 static gboolean build_frame_input(GstNvDsMast3rSlam *self, GstBuffer *buf,
@@ -461,7 +528,11 @@ static GstFlowReturn gst_nvdsmast3rslam_transform_ip(GstBaseTransform *trans,
       }
       if (!have_r)
         GST_LOG_OBJECT(self, "right frame missing; processed mono");
-      if (pose.valid) attach_pose_meta(batch_meta, left_fm, pose);
+      if (pose.valid) {
+        attach_pose_meta(batch_meta, left_fm, pose);
+        if (pose.is_keyframe && self->emit_cloud)
+          attach_cloud_meta(self, batch_meta, left_fm);
+      }
     }
     self->frame_num++;
     return GST_FLOW_OK;
@@ -479,7 +550,11 @@ static GstFlowReturn gst_nvdsmast3rslam_transform_ip(GstBaseTransform *trans,
       GST_WARNING_OBJECT(self, "frame processing error: %s", e.what());
       continue;
     }
-    if (pose.valid) attach_pose_meta(batch_meta, frame_meta, pose);
+    if (pose.valid) {
+      attach_pose_meta(batch_meta, frame_meta, pose);
+      if (pose.is_keyframe && self->emit_cloud)
+        attach_cloud_meta(self, batch_meta, frame_meta);
+    }
   }
 
   self->frame_num++;
@@ -487,11 +562,15 @@ static GstFlowReturn gst_nvdsmast3rslam_transform_ip(GstBaseTransform *trans,
 }
 
 /* --------------------------------------------------------------- plugin */
+#include "gstnvdsmast3rviz.h"
+
 static gboolean plugin_init(GstPlugin *plugin) {
   GST_DEBUG_CATEGORY_INIT(gst_nvdsmast3rslam_debug, "nvdsmast3rslam", 0,
                           "MASt3R-SLAM DeepStream element");
-  return gst_element_register(plugin, "nvdsmast3rslam", GST_RANK_PRIMARY,
-                              GST_TYPE_NVDSMAST3RSLAM);
+  gboolean ok = gst_element_register(plugin, "nvdsmast3rslam", GST_RANK_PRIMARY,
+                                     GST_TYPE_NVDSMAST3RSLAM);
+  ok &= nvdsmast3rviz_register(plugin);
+  return ok;
 }
 
 #ifndef PACKAGE

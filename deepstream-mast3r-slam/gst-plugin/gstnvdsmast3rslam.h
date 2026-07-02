@@ -59,6 +59,10 @@ struct _GstNvDsMast3rSlam {
   gboolean loop_closure;     /* retrieval + factor graph + global GN             */
   gdouble loop_sim_thresh;   /* cosine threshold for loop candidates             */
 
+  /* live map output for nvdsmast3rviz / ROS */
+  gboolean emit_cloud;       /* attach keyframe cloud meta on keyframes          */
+  gint cloud_max_points;     /* stride keyframe cloud down to this many points   */
+
   /* negotiated video info */
   GstVideoInfo video_info;
   gboolean video_info_valid;

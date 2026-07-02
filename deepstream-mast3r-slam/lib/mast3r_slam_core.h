@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace mast3r_slam {
 
@@ -70,6 +71,11 @@ class Mast3rSlamCore {
   // Stereo-hybrid: mono tracking on the left frame; the right frame is used at
   // keyframes to fix the metric scale from the known baseline (DESIGN-STEREO.md).
   PoseResult processStereo(const FrameInput &left, const FrameInput &right);
+  // Copy the newest keyframe's map into world coordinates (xyz interleaved,
+  // confidence-filtered, strided to <= max_points). Returns false if no
+  // keyframe exists yet. Used for live visualization / ROS PointCloud2.
+  bool copyLatestKeyframeCloud(int max_points, std::vector<float> &xyz,
+                               uint64_t &kf_id);
   void finish();
 
  private:

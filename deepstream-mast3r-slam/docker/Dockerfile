@@ -37,11 +37,29 @@ WORKDIR /opt/MASt3R-SLAM-GST
 COPY . /opt/MASt3R-SLAM-GST
 RUN git submodule update --init --recursive || true
 
+# Optional ROS 2 Humble bridge for nvdsmast3rviz (Odometry/Path/TF/PointCloud2).
+# Build with:  --build-arg WITH_ROS2=1
+ARG WITH_ROS2=0
+RUN if [ "${WITH_ROS2}" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends curl gnupg && \
+      curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+      echo "deb [signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" \
+        > /etc/apt/sources.list.d/ros2.list && \
+      apt-get update && apt-get install -y --no-install-recommends \
+        ros-humble-rclcpp ros-humble-nav-msgs ros-humble-sensor-msgs \
+        ros-humble-geometry-msgs ros-humble-tf2-ros ros-humble-ros-environment && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Build the plugin for Turing (sm_75). Torch_DIR points cmake at the pip libtorch.
 RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"share","cmake","Torch"))')" && \
+    ROS_FLAGS=""; if [ "${WITH_ROS2}" = "1" ]; then \
+      ROS_FLAGS="-DWITH_ROS2=ON -DCMAKE_PREFIX_PATH=/opt/ros/humble"; fi && \
     cmake -S deepstream-mast3r-slam -B /tmp/build -GNinja \
         -DTorch_DIR="${Torch_DIR}" \
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} \
+        ${ROS_FLAGS} \
         -DCMAKE_BUILD_TYPE=Release && \
     cmake --build /tmp/build -j && \
     GST_PLUGIN_DIR="$(pkg-config --variable=pluginsdir gstreamer-1.0)" && \
@@ -49,6 +67,7 @@ RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.d
     cp /tmp/build/libnvdsmast3rslam.so "${GST_PLUGIN_DIR}/" && \
     TORCH_LIB="$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"lib"))')" && \
     printf '%s\n' "${TORCH_LIB}" "/opt/nvidia/deepstream/deepstream/lib" \
+        "/opt/ros/humble/lib" \
         > /etc/ld.so.conf.d/mast3rslam.conf && \
     ldconfig && \
     (gst-inspect-1.0 nvdsmast3rslam || echo "[warn] gst-inspect could not load the element")

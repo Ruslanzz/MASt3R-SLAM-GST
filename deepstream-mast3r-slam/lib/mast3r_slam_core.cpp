@@ -814,6 +814,41 @@ PoseResult Mast3rSlamCore::processStereo(const FrameInput &left,
                                          const FrameInput &right) {
   return impl_->processStereo(left, right);
 }
+
+bool Mast3rSlamCore::copyLatestKeyframeCloud(int max_points,
+                                             std::vector<float> &xyz,
+                                             uint64_t &kf_id) {
+  if (impl_->keyframes.empty()) return false;
+  auto &kf = impl_->keyframes.back();
+  kf_id = kf.frame_id;
+
+  auto X = kf.X_canon.to(torch::kCPU).contiguous();
+  auto Cavg = (kf.C / std::max(kf.N, 1)).to(torch::kCPU).contiguous();
+  auto acc = X.accessor<float, 2>();
+  auto cacc = Cavg.accessor<float, 2>();
+  int64_t n = X.size(0);
+
+  // count survivors first to derive the stride for the max_points cap
+  int64_t valid = 0;
+  for (int64_t i = 0; i < n; ++i)
+    if (cacc[i][0] > (float)impl_->cfg.conf_threshold) valid++;
+  if (valid == 0) return false;
+  int64_t stride = std::max<int64_t>(1, valid / std::max(1, max_points));
+
+  xyz.clear();
+  xyz.reserve((valid / stride + 1) * 3);
+  int64_t seen = 0;
+  for (int64_t i = 0; i < n; ++i) {
+    if (cacc[i][0] <= (float)impl_->cfg.conf_threshold) continue;
+    if ((seen++ % stride) != 0) continue;
+    Eigen::Vector3d pw =
+        kf.T_WC.act(Eigen::Vector3d(acc[i][0], acc[i][1], acc[i][2]));
+    xyz.push_back((float)pw.x());
+    xyz.push_back((float)pw.y());
+    xyz.push_back((float)pw.z());
+  }
+  return !xyz.empty();
+}
 void Mast3rSlamCore::finish() { impl_->finish(); }
 
 }  // namespace mast3r_slam
