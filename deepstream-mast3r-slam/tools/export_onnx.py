@@ -167,6 +167,22 @@ class DecoderWrapper(torch.nn.Module):
         )
 
 
+def register_missing_symbolics(opset):
+    """ONNX mappings for ops the exporter lacks at this opset.
+
+    aten::expm1 (used by dust3r's reg_dense_depth, depth_mode='exp') has no
+    builtin symbolic — decompose as exp(x) - 1. expm1's extra precision near 0
+    is irrelevant here (the engine runs FP16 anyway).
+    """
+    from torch.onnx import register_custom_op_symbolic
+
+    def expm1(g, x):
+        one = g.op("Constant", value_t=torch.tensor(1.0))
+        return g.op("Sub", g.op("Exp", x), one)
+
+    register_custom_op_symbolic("aten::expm1", expm1, opset)
+
+
 def trace_export(module, ex_args, out_path, input_names, output_names, opset,
                  dynamic_axes=None):
     """Warm-up + export under no_grad.
@@ -205,6 +221,7 @@ def main():
 
     dev = args.device
     h, w = args.height, args.width
+    register_missing_symbolics(args.opset)
     model = load_mast3r(path=args.checkpoint, device=dev).eval()
     swap_rope_for_export(model, h, w)
     model = model.to(dev)  # move the freshly attached ExportRoPE2D buffers too
