@@ -26,24 +26,44 @@ import numpy as np
 import torch
 
 
-class EncoderWrapper(torch.nn.Module):
-    """Inlines dust3r's ``_encode_image`` body.
+def make_grid_pos(h, w, patch=16):
+    """Patch-grid RoPE positions, row-major (y, x) — replicates PositionGetter.
 
-    Calling ``_encode_image`` directly puts a ``(x, pos, None)`` tuple into the
-    traced graph; the legacy ONNX exporter's tuple-lowering pass crashes on the
-    None element with an INTERNAL ASSERT in dead_code_elimination.cpp. Inlining
-    the body keeps the graph tensors-only. ``pos`` is returned as int32 so the
-    TensorRT engine's output dtype matches what nvdsmast3rslam reads
-    (FrameInput.pos_dev is int32).
+    Computed OUTSIDE any traced graph: torch.cartesian_prod / meshgrid are
+    multi-output ops that trip the legacy exporter's tuple-lowering pass with
+    the same INTERNAL ASSERT as tuples containing None.
+    """
+    hp, wp = h // patch, w // patch
+    y = torch.arange(hp)
+    x = torch.arange(wp)
+    return torch.cartesian_prod(y, x).view(1, hp * wp, 2)
+
+
+class EncoderWrapper(torch.nn.Module):
+    """Tensor-only inline of dust3r's ``_encode_image``.
+
+    Two legacy-exporter landmines are avoided:
+      * ``_encode_image`` returns ``(x, pos, None)`` — the None element crashes
+        ``_jit_pass_lower_all_tuples``;
+      * ``patch_embed``'s PositionGetter builds pos with torch.cartesian_prod
+        (meshgrid family, same crash), so pos is precomputed in ``__init__``
+        and baked into the graph as a constant buffer.
+    ``pos`` is emitted as int32 so the engine's output dtype matches what
+    nvdsmast3rslam reads (FrameInput.pos_dev is int32).
     """
 
-    def __init__(self, model, true_shape):
+    def __init__(self, model, h, w):
         super().__init__()
         self.model = model
-        self.register_buffer("true_shape", true_shape, persistent=False)
+        patch = model.patch_embed.patch_size[0]
+        self.register_buffer("pos", make_grid_pos(h, w, patch).to(torch.int64),
+                             persistent=False)
 
     def forward(self, img):
-        x, pos = self.model.patch_embed(img, true_shape=self.true_shape)
+        pe = self.model.patch_embed
+        x = pe.proj(img).flatten(2).transpose(1, 2)
+        x = pe.norm(x)
+        pos = self.pos.expand(x.shape[0], -1, -1)
         for blk in self.model.enc_blocks:
             x = blk(x, pos)
         x = self.model.enc_norm(x)
@@ -74,6 +94,23 @@ class DecoderWrapper(torch.nn.Module):
         )
 
 
+def trace_export(module, ex_args, out_path, input_names, output_names, opset,
+                 dynamic_axes=None):
+    """Warm-up + export under no_grad.
+
+    The warm-up forward fills the python-level caches (RoPE cos/sin tables,
+    PositionGetter) so they enter the trace as plain tensor constants instead
+    of being re-traced; no_grad (rather than inference_mode) keeps the JIT
+    passes happy with the traced tensors.
+    """
+    with torch.no_grad():
+        module(*ex_args)
+        torch.onnx.export(module, ex_args, out_path,
+                          input_names=input_names, output_names=output_names,
+                          opset_version=opset, do_constant_folding=True,
+                          dynamic_axes=dynamic_axes)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint",
@@ -88,7 +125,7 @@ def main():
     ap.add_argument(
         "--dynamic-batch", action="store_true",
         help="export the encoder with a dynamic batch axis (needed for the "
-             "stereo-hybrid mode, where nvinfer runs batch-size=2)")
+             "stereo-hybrid mode's optional batch-size=2 encoder engine)")
     args = ap.parse_args()
 
     from mast3r_slam.mast3r_utils import load_mast3r
@@ -102,16 +139,13 @@ def main():
     n = (h // 16) * (w // 16)
 
     if args.which in ("encoder", "both"):
-        enc = EncoderWrapper(model, true_shape).to(dev).eval()
+        enc = EncoderWrapper(model, h, w).to(dev).eval()
         dummy = torch.randn(1, 3, h, w, device=dev)
         dyn = None
         if args.dynamic_batch:
             dyn = {"img": {0: "batch"}, "feat": {0: "batch"}, "pos": {0: "batch"}}
-        with torch.inference_mode():
-            torch.onnx.export(enc, (dummy,), args.out_encoder,
-                              input_names=["img"], output_names=["feat", "pos"],
-                              opset_version=args.opset, do_constant_folding=True,
-                              dynamic_axes=dyn)
+        trace_export(enc, (dummy,), args.out_encoder,
+                     ["img"], ["feat", "pos"], args.opset, dynamic_axes=dyn)
         print(f"[export] encoder -> {args.out_encoder} "
               f"(img {'Nx' if dyn else '1x'}3x{h}x{w})")
 
@@ -119,16 +153,18 @@ def main():
         dec = DecoderWrapper(model, true_shape, true_shape.clone()).to(dev).eval()
         f1 = torch.randn(1, n, 1024, device=dev)
         f2 = torch.randn(1, n, 1024, device=dev)
-        # int32 to match the encoder engine's pos output and the C++ core's I/O
-        p1 = torch.zeros(1, n, 2, dtype=torch.int32, device=dev)
-        p2 = torch.zeros(1, n, 2, dtype=torch.int32, device=dev)
-        with torch.inference_mode():
-            torch.onnx.export(
-                dec, (f1, p1, f2, p2), args.out_decoder,
-                input_names=["feat1", "pos1", "feat2", "pos2"],
-                output_names=["pts3d_1", "conf_1", "desc_1", "desc_conf_1",
-                              "pts3d_2", "conf_2", "desc_2", "desc_conf_2"],
-                opset_version=args.opset, do_constant_folding=True)
+        # dummy pos MUST be the real patch grid, not zeros: RoPE bakes its
+        # cos/sin tables sized max(pos)+1 into the graph, so zero positions
+        # would bake 1-row tables and the engine would gather garbage at
+        # runtime. int32 matches the encoder engine output / C++ core I/O.
+        grid = make_grid_pos(h, w).to(torch.int32).to(dev)
+        p1 = grid.clone()
+        p2 = grid.clone()
+        trace_export(dec, (f1, p1, f2, p2), args.out_decoder,
+                     ["feat1", "pos1", "feat2", "pos2"],
+                     ["pts3d_1", "conf_1", "desc_1", "desc_conf_1",
+                      "pts3d_2", "conf_2", "desc_2", "desc_conf_2"],
+                     args.opset)
         print(f"[export] decoder -> {args.out_decoder} (feat 1x{n}x1024)")
 
 
