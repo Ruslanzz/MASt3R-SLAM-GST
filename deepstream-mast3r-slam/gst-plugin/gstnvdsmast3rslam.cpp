@@ -42,6 +42,12 @@ enum {
   PROP_SAVE_RESULTS,
   PROP_CONF_THRESHOLD,
   PROP_GPU_ID,
+  PROP_STEREO_MODE,
+  PROP_BASELINE,
+  PROP_LEFT_SOURCE_ID,
+  PROP_RIGHT_SOURCE_ID,
+  PROP_LOOP_CLOSURE,
+  PROP_LOOP_SIM_THRESH,
 };
 
 /* gst-nvinfer feeds us NVMM video; we negotiate RGBA (set by nvvideoconvert) but
@@ -132,6 +138,37 @@ static void gst_nvdsmast3rslam_class_init(GstNvDsMast3rSlamClass *klass) {
       gobject_class, PROP_GPU_ID,
       g_param_spec_int("gpu-id", "gpu-id", "CUDA device id", 0, G_MAXINT, 0,
                        (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_STEREO_MODE,
+      g_param_spec_boolean("stereo-mode", "stereo-mode",
+                           "Pair batch frames (left/right) and anchor metric "
+                           "scale from the stereo baseline",
+                           FALSE, (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_BASELINE,
+      g_param_spec_double("baseline", "baseline",
+                          "Stereo baseline in meters", 1e-4, 10.0, 0.12,
+                          (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_LEFT_SOURCE_ID,
+      g_param_spec_int("left-source-id", "left-source-id",
+                       "nvstreammux source-id of the left camera", 0, G_MAXINT,
+                       0, (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_RIGHT_SOURCE_ID,
+      g_param_spec_int("right-source-id", "right-source-id",
+                       "nvstreammux source-id of the right camera", 0, G_MAXINT,
+                       1, (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_LOOP_CLOSURE,
+      g_param_spec_boolean("loop-closure", "loop-closure",
+                           "Enable retrieval + factor-graph global optimisation",
+                           TRUE, (GParamFlags)G_PARAM_READWRITE));
+  g_object_class_install_property(
+      gobject_class, PROP_LOOP_SIM_THRESH,
+      g_param_spec_double("loop-sim-thresh", "loop-sim-thresh",
+                          "Cosine similarity threshold for loop candidates",
+                          0.0, 1.0, 0.90, (GParamFlags)G_PARAM_READWRITE));
 
   gst_element_class_set_static_metadata(
       element_class, "MASt3R-SLAM", "Filter/Analyzer/Video",
@@ -155,6 +192,12 @@ static void gst_nvdsmast3rslam_init(GstNvDsMast3rSlam *self) {
   self->save_results = TRUE;
   self->conf_threshold = 1.5;
   self->gpu_id = 0;
+  self->stereo_mode = FALSE;
+  self->baseline = 0.12;
+  self->left_source_id = 0;
+  self->right_source_id = 1;
+  self->loop_closure = TRUE;
+  self->loop_sim_thresh = 0.90;
   self->core = nullptr;
   self->frame_num = 0;
   self->video_info_valid = FALSE;
@@ -197,6 +240,12 @@ static void gst_nvdsmast3rslam_set_property(GObject *object, guint prop_id,
     case PROP_SAVE_RESULTS: self->save_results = g_value_get_boolean(value); break;
     case PROP_CONF_THRESHOLD: self->conf_threshold = g_value_get_double(value); break;
     case PROP_GPU_ID: self->gpu_id = g_value_get_int(value); break;
+    case PROP_STEREO_MODE: self->stereo_mode = g_value_get_boolean(value); break;
+    case PROP_BASELINE: self->baseline = g_value_get_double(value); break;
+    case PROP_LEFT_SOURCE_ID: self->left_source_id = g_value_get_int(value); break;
+    case PROP_RIGHT_SOURCE_ID: self->right_source_id = g_value_get_int(value); break;
+    case PROP_LOOP_CLOSURE: self->loop_closure = g_value_get_boolean(value); break;
+    case PROP_LOOP_SIM_THRESH: self->loop_sim_thresh = g_value_get_double(value); break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
   }
 }
@@ -214,6 +263,12 @@ static void gst_nvdsmast3rslam_get_property(GObject *object, guint prop_id,
     case PROP_SAVE_RESULTS: g_value_set_boolean(value, self->save_results); break;
     case PROP_CONF_THRESHOLD: g_value_set_double(value, self->conf_threshold); break;
     case PROP_GPU_ID: g_value_set_int(value, self->gpu_id); break;
+    case PROP_STEREO_MODE: g_value_set_boolean(value, self->stereo_mode); break;
+    case PROP_BASELINE: g_value_set_double(value, self->baseline); break;
+    case PROP_LEFT_SOURCE_ID: g_value_set_int(value, self->left_source_id); break;
+    case PROP_RIGHT_SOURCE_ID: g_value_set_int(value, self->right_source_id); break;
+    case PROP_LOOP_CLOSURE: g_value_set_boolean(value, self->loop_closure); break;
+    case PROP_LOOP_SIM_THRESH: g_value_set_double(value, self->loop_sim_thresh); break;
     default: G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec); break;
   }
 }
@@ -230,6 +285,9 @@ static gboolean gst_nvdsmast3rslam_start(GstBaseTransform *trans) {
   cfg.save_results = self->save_results;
   cfg.conf_threshold = self->conf_threshold;
   cfg.gpu_id = self->gpu_id;
+  cfg.baseline_m = self->baseline;
+  cfg.loop_closure = self->loop_closure;
+  cfg.loop_sim_thresh = self->loop_sim_thresh;
   try {
     self->core = new mast3r_slam::Mast3rSlamCore(cfg);
     if (!self->core->start()) {
@@ -318,6 +376,47 @@ static void attach_pose_meta(NvDsBatchMeta *batch_meta, NvDsFrameMeta *frame_met
   nvds_add_user_meta_to_frame(frame_meta, user_meta);
 }
 
+/* Build a FrameInput from a frame's encoder tensor meta. Returns FALSE if the
+ * tensor meta (or feat/pos layers) is missing. */
+static gboolean build_frame_input(GstNvDsMast3rSlam *self, GstBuffer *buf,
+                                  NvDsFrameMeta *frame_meta, double ts,
+                                  mast3r_slam::FrameInput *fin) {
+  NvDsInferTensorMeta *tensor_meta = nullptr;
+  for (NvDsMetaList *u = frame_meta->frame_user_meta_list; u != nullptr;
+       u = u->next) {
+    NvDsUserMeta *um = (NvDsUserMeta *)u->data;
+    if (um->base_meta.meta_type == NVDSINFER_TENSOR_OUTPUT_META) {
+      NvDsInferTensorMeta *tm = (NvDsInferTensorMeta *)um->user_meta_data;
+      if (tm->unique_id == self->infer_gie_id) {
+        tensor_meta = tm;
+        break;
+      }
+    }
+  }
+  if (!tensor_meta) return FALSE;
+
+  NvDsInferDims feat_dims{}, pos_dims{};
+  const void *feat_dev = find_layer(tensor_meta, "feat", &feat_dims);
+  const void *pos_dev = find_layer(tensor_meta, "pos", &pos_dims);
+  if (!feat_dev || !pos_dev) {
+    GST_WARNING_OBJECT(self, "encoder tensor meta missing feat/pos layers");
+    return FALSE;
+  }
+
+  fin->timestamp = ts;
+  fin->feat_dev = (const float *)feat_dev;
+  fin->pos_dev = pos_dev; /* int32 in the engine; core casts to long */
+  /* feat dims: (N, 1024); pos dims: (N, 2). nvinfer drops the batch dim. */
+  fin->feat_n = (feat_dims.numDims >= 2) ? feat_dims.d[feat_dims.numDims - 2] : 0;
+  fin->feat_dim = (feat_dims.numDims >= 1) ? feat_dims.d[feat_dims.numDims - 1] : 0;
+  fin->pos_n = (pos_dims.numDims >= 2) ? pos_dims.d[pos_dims.numDims - 2] : 0;
+  fin->model_w = tensor_meta->network_info.width;
+  fin->model_h = tensor_meta->network_info.height;
+  fin->gst_buffer = buf; /* for optional color extraction */
+  fin->frame_meta = frame_meta;
+  return TRUE;
+}
+
 /* --------------------------------------------------------------- per buffer */
 static GstFlowReturn gst_nvdsmast3rslam_transform_ip(GstBaseTransform *trans,
                                                      GstBuffer *buf) {
@@ -334,44 +433,44 @@ static GstFlowReturn gst_nvdsmast3rslam_transform_ip(GstBaseTransform *trans,
                   ? (double)GST_BUFFER_PTS(buf) / (double)GST_SECOND
                   : (double)self->frame_num / 30.0;
 
-  for (NvDsMetaList *l = batch_meta->frame_meta_list; l != nullptr; l = l->next) {
-    NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l->data;
-
-    /* Locate the encoder tensor meta produced by our nvinfer. */
-    NvDsInferTensorMeta *tensor_meta = nullptr;
-    for (NvDsMetaList *u = frame_meta->frame_user_meta_list; u != nullptr;
-         u = u->next) {
-      NvDsUserMeta *um = (NvDsUserMeta *)u->data;
-      if (um->base_meta.meta_type == NVDSINFER_TENSOR_OUTPUT_META) {
-        NvDsInferTensorMeta *tm = (NvDsInferTensorMeta *)um->user_meta_data;
-        if (tm->unique_id == self->infer_gie_id) {
-          tensor_meta = tm;
-          break;
-        }
+  if (self->stereo_mode) {
+    /* Pair the batch frames by source-id: left drives SLAM, right anchors the
+     * metric scale (DESIGN-STEREO.md). Degrades to mono if right is missing. */
+    mast3r_slam::FrameInput left{}, rightf{};
+    gboolean have_l = FALSE, have_r = FALSE;
+    NvDsFrameMeta *left_fm = nullptr;
+    for (NvDsMetaList *l = batch_meta->frame_meta_list; l != nullptr;
+         l = l->next) {
+      NvDsFrameMeta *fm = (NvDsFrameMeta *)l->data;
+      if ((gint)fm->source_id == self->left_source_id) {
+        have_l = build_frame_input(self, buf, fm, ts, &left);
+        left_fm = fm;
+      } else if ((gint)fm->source_id == self->right_source_id) {
+        have_r = build_frame_input(self, buf, fm, ts, &rightf);
       }
     }
-    if (!tensor_meta) continue;
-
-    NvDsInferDims feat_dims{}, pos_dims{};
-    const void *feat_dev = find_layer(tensor_meta, "feat", &feat_dims);
-    const void *pos_dev = find_layer(tensor_meta, "pos", &pos_dims);
-    if (!feat_dev || !pos_dev) {
-      GST_WARNING_OBJECT(self, "encoder tensor meta missing feat/pos layers");
-      continue;
+    if (have_l) {
+      mast3r_slam::PoseResult pose;
+      try {
+        pose = have_r ? self->core->processStereo(left, rightf)
+                      : self->core->process(left);
+      } catch (const std::exception &e) {
+        GST_WARNING_OBJECT(self, "stereo frame processing error: %s", e.what());
+        self->frame_num++;
+        return GST_FLOW_OK;
+      }
+      if (!have_r)
+        GST_LOG_OBJECT(self, "right frame missing; processed mono");
+      if (pose.valid) attach_pose_meta(batch_meta, left_fm, pose);
     }
+    self->frame_num++;
+    return GST_FLOW_OK;
+  }
 
-    mast3r_slam::FrameInput fin;
-    fin.timestamp = ts;
-    fin.feat_dev = (const float *)feat_dev;
-    fin.pos_dev = pos_dev;  /* int32 in the engine; core casts to long */
-    /* feat dims: (N, 1024); pos dims: (N, 2). nvinfer drops the batch dim. */
-    fin.feat_n = (feat_dims.numDims >= 2) ? feat_dims.d[feat_dims.numDims - 2] : 0;
-    fin.feat_dim = (feat_dims.numDims >= 1) ? feat_dims.d[feat_dims.numDims - 1] : 0;
-    fin.pos_n = (pos_dims.numDims >= 2) ? pos_dims.d[pos_dims.numDims - 2] : 0;
-    fin.model_w = tensor_meta->network_info.width;
-    fin.model_h = tensor_meta->network_info.height;
-    fin.gst_buffer = buf;          /* for optional color extraction */
-    fin.frame_meta = frame_meta;
+  for (NvDsMetaList *l = batch_meta->frame_meta_list; l != nullptr; l = l->next) {
+    NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l->data;
+    mast3r_slam::FrameInput fin{};
+    if (!build_frame_input(self, buf, frame_meta, ts, &fin)) continue;
 
     mast3r_slam::PoseResult pose;
     try {

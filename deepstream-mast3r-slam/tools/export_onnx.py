@@ -68,6 +68,10 @@ def main():
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--which", choices=["encoder", "decoder", "both"], default="both")
+    ap.add_argument(
+        "--dynamic-batch", action="store_true",
+        help="export the encoder with a dynamic batch axis (needed for the "
+             "stereo-hybrid mode, where nvinfer runs batch-size=2)")
     args = ap.parse_args()
 
     from mast3r_slam.mast3r_utils import load_mast3r
@@ -83,11 +87,16 @@ def main():
     if args.which in ("encoder", "both"):
         enc = EncoderWrapper(model, true_shape).to(dev).eval()
         dummy = torch.randn(1, 3, h, w, device=dev)
+        dyn = None
+        if args.dynamic_batch:
+            dyn = {"img": {0: "batch"}, "feat": {0: "batch"}, "pos": {0: "batch"}}
         with torch.inference_mode():
             torch.onnx.export(enc, (dummy,), args.out_encoder,
                               input_names=["img"], output_names=["feat", "pos"],
-                              opset_version=args.opset, do_constant_folding=True)
-        print(f"[export] encoder -> {args.out_encoder} (img 1x3x{h}x{w})")
+                              opset_version=args.opset, do_constant_folding=True,
+                              dynamic_axes=dyn)
+        print(f"[export] encoder -> {args.out_encoder} "
+              f"(img {'Nx' if dyn else '1x'}3x{h}x{w})")
 
     if args.which in ("decoder", "both"):
         dec = DecoderWrapper(model, true_shape, true_shape.clone()).to(dev).eval()

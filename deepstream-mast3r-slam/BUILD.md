@@ -192,6 +192,9 @@ bash deepstream-mast3r-slam/pipelines/run_v4l2.sh /dev/video0
 # сеть: RTP/H264 поверх UDP (порт 5000) или RTSP
 bash deepstream-mast3r-slam/pipelines/run_udp.sh udp 5000
 bash deepstream-mast3r-slam/pipelines/run_udp.sh rtsp rtsp://host/stream
+
+# СТЕРЕО-ГИБРИД (метрическая траектория + loop closure, см. DESIGN-STEREO.md):
+bash deepstream-mast3r-slam/pipelines/run_stereo_v4l2.sh /dev/video0 /dev/video1 0.12
 ```
 
 Переопределение параметров пайплайна:

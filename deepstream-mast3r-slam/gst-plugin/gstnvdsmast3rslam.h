@@ -51,6 +51,14 @@ struct _GstNvDsMast3rSlam {
   gdouble conf_threshold;    /* confidence filter for the .ply                  */
   gint gpu_id;               /* CUDA device                                     */
 
+  /* stereo-hybrid mode (DESIGN-STEREO.md) */
+  gboolean stereo_mode;      /* pair batch frames; metric scale from baseline   */
+  gdouble baseline;          /* stereo baseline, meters                          */
+  gint left_source_id;       /* nvstreammux source-id of the left camera         */
+  gint right_source_id;      /* nvstreammux source-id of the right camera        */
+  gboolean loop_closure;     /* retrieval + factor graph + global GN             */
+  gdouble loop_sim_thresh;   /* cosine threshold for loop candidates             */
+
   /* negotiated video info */
   GstVideoInfo video_info;
   gboolean video_info_valid;

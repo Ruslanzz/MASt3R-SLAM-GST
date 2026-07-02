@@ -22,6 +22,12 @@ struct CoreConfig {
   bool save_results = true;
   double conf_threshold = 1.5;   // .ply confidence filter
   int gpu_id = 0;
+
+  // --- stereo-hybrid mode (see DESIGN-STEREO.md) ---
+  double baseline_m = 0.12;      // stereo baseline in meters (metric anchor)
+  bool loop_closure = true;      // retrieval + factor graph + global GN
+  double loop_sim_thresh = 0.90; // cosine threshold on global descriptors
+  int loop_min_gap = 15;         // keyframes to skip before loop candidates
 };
 
 /* One frame's encoder output, handed over by the element. Pointers are CUDA
@@ -61,6 +67,9 @@ class Mast3rSlamCore {
 
   bool start();
   PoseResult process(const FrameInput &in);
+  // Stereo-hybrid: mono tracking on the left frame; the right frame is used at
+  // keyframes to fix the metric scale from the known baseline (DESIGN-STEREO.md).
+  PoseResult processStereo(const FrameInput &left, const FrameInput &right);
   void finish();
 
  private:

@@ -82,6 +82,7 @@ struct Keyframe {
   torch::Tensor C;        // (HW,1) cuda
   torch::Tensor feat;     // (1,N,1024)
   torch::Tensor pos;      // (1,N,2) long
+  torch::Tensor gdesc;    // (1024) L2-normalized global descriptor (loop closure)
   int N = 0;
   int H = 0, W = 0;
 };
@@ -99,6 +100,21 @@ struct Mast3rSlamCore::Impl {
   std::vector<Keyframe> keyframes;
   std::vector<TrajSample> traj;  // appended per keyframe at finish
   torch::Tensor idx_f2k;         // previous frame->kf match init
+
+  // --- stereo metric-scale state (DESIGN-STEREO.md) ---
+  double scale_ema = 1.0;  // baseline_true / baseline_est, EMA-smoothed
+  int scale_updates = 0;
+
+  // --- loop-closure factor graph: two-way edges appended row-by-row ---
+  std::vector<int64_t> fg_ii, fg_jj;
+  std::vector<torch::Tensor> fg_idx;    // per edge: (HW) long
+  std::vector<torch::Tensor> fg_valid;  // per edge: (HW,1) bool
+  std::vector<torch::Tensor> fg_Q;      // per edge: (HW,1) float
+  // backend params (mirroring config/base.yaml local_opt)
+  float bo_sigma_ray = 0.003f, bo_sigma_dist = 1e1f;
+  float bo_C_conf = 0.0f, bo_Q_conf = 1.5f;
+  float bo_min_match_frac = 0.1f, bo_delta_norm = 1e-8f;
+  int bo_max_iters = 10;
 
   explicit Impl(const CoreConfig &c) : cfg(c), device(torch::kCUDA, c.gpu_id) {}
 
@@ -324,8 +340,238 @@ struct Mast3rSlamCore::Impl {
     T_CkCf_out = T_CkCf;
   }
 
+  // ------------------------------------------------ stereo scale (hybrid C)
+  // Weighted Umeyama similarity alignment X -> Y (both (N,3) cuda float,
+  // weights (N,1)). Only the translation norm is needed for the baseline, but
+  // the full closed form is computed for robustness. Runs on CPU in double.
+  bool umeyamaSim(torch::Tensor Xt, torch::Tensor Yt, torch::Tensor wt,
+                  double &scale_out, Eigen::Vector3d &t_out) {
+    auto X = Xt.to(torch::kCPU).to(torch::kDouble).contiguous();
+    auto Y = Yt.to(torch::kCPU).to(torch::kDouble).contiguous();
+    auto w = wt.to(torch::kCPU).to(torch::kDouble).contiguous();
+    int64_t n = X.size(0);
+    if (n < 100) return false;
+    auto xa = X.accessor<double, 2>();
+    auto ya = Y.accessor<double, 2>();
+    auto wa = w.accessor<double, 2>();
+
+    double wsum = 0.0;
+    Eigen::Vector3d mx = Eigen::Vector3d::Zero(), my = Eigen::Vector3d::Zero();
+    for (int64_t i = 0; i < n; ++i) {
+      double wi = wa[i][0];
+      wsum += wi;
+      mx += wi * Eigen::Vector3d(xa[i][0], xa[i][1], xa[i][2]);
+      my += wi * Eigen::Vector3d(ya[i][0], ya[i][1], ya[i][2]);
+    }
+    if (wsum <= 1e-9) return false;
+    mx /= wsum;
+    my /= wsum;
+
+    Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+    double var_x = 0.0;
+    for (int64_t i = 0; i < n; ++i) {
+      double wi = wa[i][0] / wsum;
+      Eigen::Vector3d xc = Eigen::Vector3d(xa[i][0], xa[i][1], xa[i][2]) - mx;
+      Eigen::Vector3d yc = Eigen::Vector3d(ya[i][0], ya[i][1], ya[i][2]) - my;
+      cov += wi * (yc * xc.transpose());
+      var_x += wi * xc.squaredNorm();
+    }
+    if (var_x <= 1e-12) return false;
+
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(cov,
+        Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Vector3d D = Eigen::Vector3d::Ones();
+    if ((svd.matrixU() * svd.matrixV().transpose()).determinant() < 0) D(2) = -1;
+    Eigen::Matrix3d R =
+        svd.matrixU() * D.asDiagonal() * svd.matrixV().transpose();
+    double c = svd.singularValues().dot(D) / var_x;
+    Eigen::Vector3d t = my - c * (R * mx);
+
+    scale_out = c;
+    t_out = t;
+    return std::isfinite(c) && t.allFinite();
+  }
+
+  // Estimate the metric scale s = baseline_m / ||t_LR|| from a stereo pair.
+  // Two decoder passes give the right view's points in both frames:
+  //   decoder(L,R): Xj = X_R in LEFT frame;  decoder(R,L): Xi = X_R in RIGHT frame.
+  // Also returns the L,R decode (o_lr) so the caller can reuse the stereo
+  // pointmap of the left view.
+  bool estimateStereoScale(torch::Tensor featL, torch::Tensor posL,
+                           torch::Tensor featR, torch::Tensor posR, int H, int W,
+                           DecOut &o_lr_out, double &s_out) {
+    auto o_lr = runDecoder(featL, posL, featR, posR, H, W);
+    auto o_rl = runDecoder(featR, posR, featL, posL, H, W);
+
+    auto Xrr = o_rl.Xi.view({-1, 3});  // right pts in right frame
+    auto Xrl = o_lr.Xj.view({-1, 3});  // right pts in left frame
+    auto wgt = torch::sqrt(o_rl.Ci.view({-1, 1}) * o_lr.Cj.view({-1, 1}));
+
+    // keep confident points, subsample to <= 8192 for the CPU solve
+    auto mask = (wgt > 1.5f).view({-1});
+    auto sel = mask.nonzero().view({-1});
+    if (sel.numel() < 500) return false;
+    int64_t stride = std::max<int64_t>(1, sel.numel() / 8192);
+    sel = sel.index({torch::indexing::Slice(0, torch::indexing::None, stride)});
+
+    double c = 1.0;
+    Eigen::Vector3d t;
+    if (!umeyamaSim(Xrr.index({sel}), Xrl.index({sel}), wgt.index({sel}), c, t))
+      return false;
+    double b_est = t.norm();
+    if (b_est < 1e-4) return false;
+
+    s_out = cfg.baseline_m / b_est;
+    o_lr_out = o_lr;
+    return std::isfinite(s_out) && s_out > 0.0;
+  }
+
+  void updateScaleEMA(double s_new) {
+    if (scale_updates == 0) {
+      scale_ema = s_new;
+    } else {
+      double r = s_new / scale_ema;
+      if (r < 0.5 || r > 2.0) {
+        std::cerr << "[nvdsmast3rslam] stereo scale outlier rejected: " << s_new
+                  << " (ema " << scale_ema << ")\n";
+        return;
+      }
+      scale_ema = 0.7 * scale_ema + 0.3 * s_new;
+    }
+    scale_updates++;
+  }
+
+  // --------------------------------------------- loop closure + backend GN
+  torch::Tensor globalDesc(torch::Tensor feat) {
+    auto d = feat.mean(1).view({-1});  // (1024)
+    return (d / d.norm()).contiguous();
+  }
+
+  // Symmetric decode+match of keyframes (i, j); appends both edge directions.
+  // Consecutive edges are always kept; loop candidates are gated by the
+  // min-match-fraction (geometric verification). Port of FactorGraph.add_factors.
+  bool addEdge(int i, int j, bool consecutive) {
+    auto &ki = keyframes[i];
+    auto &kj = keyframes[j];
+    auto o_ij = runDecoder(ki.feat, ki.pos, kj.feat, kj.pos, ki.H, ki.W);
+    auto o_ji = runDecoder(kj.feat, kj.pos, ki.feat, ki.pos, kj.H, kj.W);
+
+    auto m_ij = match(o_ij.Xi, o_ij.Xj, o_ij.Di, o_ij.Dj, torch::Tensor());
+    auto m_ji = match(o_ji.Xi, o_ji.Xj, o_ji.Di, o_ji.Dj, torch::Tensor());
+    auto idx_i2j = m_ij.first.view({-1});           // (HW)
+    auto valid_j = m_ij.second.view({-1, 1});       // (HW,1)
+    auto idx_j2i = m_ji.first.view({-1});
+    auto valid_i = m_ji.second.view({-1, 1});
+
+    auto Qii = o_ij.Qi.view({-1, 1});
+    auto Qji = o_ij.Qj.view({-1, 1});
+    auto Qjj = o_ji.Qi.view({-1, 1});
+    auto Qij = o_ji.Qj.view({-1, 1});
+    auto Qj = torch::sqrt(Qii.index({idx_i2j}) * Qji);  // conf of edge i->j
+    auto Qi = torch::sqrt(Qjj.index({idx_j2i}) * Qij);  // conf of edge j->i
+
+    auto vj = valid_j & (Qj > bo_Q_conf);
+    auto vi = valid_i & (Qi > bo_Q_conf);
+    double frac_j = vj.sum().item<double>() / (double)vj.numel();
+    double frac_i = vi.sum().item<double>() / (double)vi.numel();
+    if (!consecutive && std::min(frac_j, frac_i) < bo_min_match_frac) {
+      return false;  // geometric verification failed -> reject candidate
+    }
+
+    fg_ii.push_back(i); fg_jj.push_back(j);
+    fg_idx.push_back(idx_i2j.contiguous());
+    fg_valid.push_back(valid_j.contiguous());
+    fg_Q.push_back(Qj.contiguous());
+    fg_ii.push_back(j); fg_jj.push_back(i);
+    fg_idx.push_back(idx_j2i.contiguous());
+    fg_valid.push_back(valid_i.contiguous());
+    fg_Q.push_back(Qi.contiguous());
+    return true;
+  }
+
+  // Global Gauss-Newton over all keyframes (reused CUDA kernel). The first
+  // keyframe is pinned; the kernel updates the pose tensor in place.
+  void solveBackend() {
+    int n = (int)keyframes.size();
+    if (n < 2 || fg_ii.empty()) return;
+
+    std::vector<torch::Tensor> xs, cs;
+    xs.reserve(n); cs.reserve(n);
+    for (auto &kf : keyframes) {
+      xs.push_back(kf.X_canon);
+      cs.push_back(kf.C / std::max(kf.N, 1));
+    }
+    auto Xs = torch::stack(xs).contiguous();  // (n,HW,3)
+    auto Cs = torch::stack(cs).contiguous();  // (n,HW,1)
+
+    auto Twc_cpu = torch::empty({n, 8}, torch::kFloat32);
+    {
+      auto acc = Twc_cpu.accessor<float, 2>();
+      double d[8];
+      for (int k = 0; k < n; ++k) {
+        keyframes[k].T_WC.toData(d);
+        for (int c = 0; c < 8; ++c) acc[k][c] = (float)d[c];
+      }
+    }
+    auto Twc = Twc_cpu.to(device).contiguous();
+
+    auto lopts = torch::TensorOptions().dtype(torch::kLong);
+    auto ii = torch::from_blob(fg_ii.data(), {(int64_t)fg_ii.size()}, lopts)
+                  .clone().to(device);
+    auto jj = torch::from_blob(fg_jj.data(), {(int64_t)fg_jj.size()}, lopts)
+                  .clone().to(device);
+    auto idx = torch::stack(fg_idx).contiguous();      // (E,HW)
+    auto valid = torch::stack(fg_valid).contiguous();  // (E,HW,1)
+    auto Q = torch::stack(fg_Q).contiguous();          // (E,HW,1)
+
+    gauss_newton_rays_cuda(Twc, Xs, Cs, ii, jj, idx, valid, Q, bo_sigma_ray,
+                           bo_sigma_dist, bo_C_conf, bo_Q_conf, bo_max_iters,
+                           bo_delta_norm);
+
+    // write optimized poses back (keyframe 0 stays pinned)
+    auto out = Twc.to(torch::kCPU).to(torch::kDouble).contiguous();
+    auto oacc = out.accessor<double, 2>();
+    for (int k = 1; k < n; ++k) {
+      double d[8];
+      for (int c = 0; c < 8; ++c) d[c] = oacc[k][c];
+      keyframes[k].T_WC = Sim3::fromData(d);
+    }
+  }
+
+  // Called after a keyframe is appended: descriptor, edges, global opt.
+  void onNewKeyframe() {
+    int idx = (int)keyframes.size() - 1;
+    keyframes[idx].gdesc = globalDesc(keyframes[idx].feat);
+
+    bool graph_changed = false;
+    if (idx >= 1) graph_changed |= addEdge(idx - 1, idx, /*consecutive=*/true);
+
+    if (cfg.loop_closure && idx > cfg.loop_min_gap) {
+      int m = idx - cfg.loop_min_gap;  // candidates: keyframes [0, m)
+      std::vector<torch::Tensor> ds;
+      ds.reserve(m);
+      for (int k = 0; k < m; ++k) ds.push_back(keyframes[k].gdesc);
+      auto sims = torch::stack(ds).matmul(keyframes[idx].gdesc);  // (m)
+      auto best = sims.argmax().item<int64_t>();
+      double best_sim = sims[best].item<double>();
+      if (best_sim > cfg.loop_sim_thresh) {
+        bool ok = addEdge((int)best, idx, /*consecutive=*/false);
+        graph_changed |= ok;
+        std::cout << "[nvdsmast3rslam] loop candidate kf " << best << " <-> "
+                  << idx << " sim=" << best_sim
+                  << (ok ? " ACCEPTED" : " rejected (geometry)") << "\n";
+      }
+    }
+    if (graph_changed) solveBackend();
+  }
+
   // -------------------------------------------------------------- per frame
-  PoseResult process(const FrameInput &in) {
+  PoseResult process(const FrameInput &in) { return processImpl(in, nullptr); }
+  PoseResult processStereo(const FrameInput &left, const FrameInput &right) {
+    return processImpl(left, &right);
+  }
+
+  PoseResult processImpl(const FrameInput &in, const FrameInput *right) {
     torch::NoGradGuard ng;
     int H = in.model_h, W = in.model_w;
     // wrap encoder tensors (device memory owned by nvinfer meta)
@@ -334,14 +580,40 @@ struct Mast3rSlamCore::Impl {
                                 torch::TensorOptions().dtype(torch::kInt32).device(device))
                    .to(torch::kLong);
 
+    // stereo-hybrid: wrap the right frame's encoder tensors too (valid only
+    // within this call, so all stereo work happens synchronously below)
+    torch::Tensor featR, posR;
+    if (right) {
+      featR = torch::from_blob((void *)right->feat_dev,
+                               {1, right->feat_n, right->feat_dim}, f32());
+      posR = torch::from_blob((void *)right->pos_dev, {1, right->pos_n, 2},
+                              torch::TensorOptions().dtype(torch::kInt32)
+                                  .device(device))
+                 .to(torch::kLong);
+    }
+
     PoseResult res;
     res.frame_id = frame_count;
     res.timestamp = in.timestamp;
 
-    if (mode == 0) {  // INIT — mono inference
-      auto o = runDecoder(feat, pos, feat, pos, H, W);
-      auto X = o.Xi.view({-1, 3}).contiguous();
-      auto C = o.Ci.view({-1, 1}).contiguous();
+    if (mode == 0) {  // INIT
+      torch::Tensor X, C;
+      if (right) {
+        // stereo init: decoder(L,R) pointmap is better conditioned than the
+        // mono self-pair, and the pair fixes the metric scale from frame one
+        DecOut o_lr;
+        double s = 1.0;
+        if (estimateStereoScale(feat, pos, featR, posR, H, W, o_lr, s)) {
+          updateScaleEMA(s);
+          X = (o_lr.Xi.view({-1, 3}) * (float)scale_ema).contiguous();
+          C = o_lr.Ci.view({-1, 1}).contiguous();
+        }
+      }
+      if (!X.defined()) {  // mono init (or stereo scale estimation failed)
+        auto o = runDecoder(feat, pos, feat, pos, H, W);
+        X = (o.Xi.view({-1, 3}) * (float)scale_ema).contiguous();
+        C = o.Ci.view({-1, 1}).contiguous();
+      }
       Keyframe kf;
       kf.frame_id = frame_count;
       kf.timestamp = in.timestamp;
@@ -351,6 +623,7 @@ struct Mast3rSlamCore::Impl {
       kf.H = H; kf.W = W;
       updatePointmap(kf.X_canon, kf.C, kf.N, X, C);
       keyframes.push_back(std::move(kf));
+      onNewKeyframe();
       mode = 1;
       fillPose(res, keyframes.back().T_WC, /*kf=*/true);
       frame_count++;
@@ -379,9 +652,18 @@ struct Mast3rSlamCore::Impl {
 
     auto Qk = torch::sqrt(Qff.index({idx0}) * Qkf);  // (HW,1)
 
-    // frame canonical pointmap (single update -> just set)
-    auto Xf_canon = Xff;  // frame.update_pointmap with N=0 sets directly
-    auto Cf = Cff;        // average conf with N=1 == C
+    // Metric correction (stereo-hybrid): bring the frame's decoder outputs into
+    // the same metric units as the keyframe maps, so the relative Sim3 scale in
+    // tracking stays ~1 and does not compound across keyframes. Matching above
+    // ran on the raw outputs (both views share the raw scale), which keeps the
+    // 3D distance threshold semantics identical to the reference.
+    auto Xf_canon = (scale_updates > 0)
+                        ? (Xff * (float)scale_ema).contiguous()
+                        : Xff;  // frame.update_pointmap with N=0 sets directly
+    auto Xkf_m = (scale_updates > 0)
+                     ? (Xkf * (float)scale_ema).contiguous()
+                     : Xkf;
+    auto Cf = Cff;  // average conf with N=1 == C
 
     // Points/poses (ray mode, no calib)
     auto Xf = Xf_canon.index({idx0});  // (HW,3)
@@ -407,8 +689,8 @@ struct Mast3rSlamCore::Impl {
     Sim3 T_CkCf;
     optPoseRay(Xf, Xk, T_WCf, kf.T_WC, Qk, valid_opt.to(torch::kFloat32), T_CkCf);
 
-    // update keyframe pointmap with aligned current observation
-    auto Xkk = actSim3(T_CkCf, Xkf, nullptr);
+    // update keyframe pointmap with aligned current observation (metric units)
+    auto Xkk = actSim3(T_CkCf, Xkf_m, nullptr);
     updatePointmap(kf.X_canon, kf.C, kf.N, Xkk, Ckf);
 
     // keyframe selection
@@ -422,6 +704,19 @@ struct Mast3rSlamCore::Impl {
 
     if (new_kf) {
       idx_f2k = torch::Tensor();  // reset
+
+      // stereo-hybrid: refresh the metric scale on every keyframe and keep the
+      // stereo pointmap as an extra observation for the new keyframe's map
+      DecOut o_lr;
+      bool have_stereo = false;
+      if (right) {
+        double s = 1.0;
+        if (estimateStereoScale(feat, pos, featR, posR, H, W, o_lr, s)) {
+          updateScaleEMA(s);
+          have_stereo = true;
+        }
+      }
+
       Keyframe nkf;
       nkf.frame_id = frame_count;
       nkf.timestamp = in.timestamp;
@@ -430,11 +725,21 @@ struct Mast3rSlamCore::Impl {
       nkf.pos = pos.clone();
       nkf.H = H; nkf.W = W;
       int n0 = 0;
+      // seed with the frame's canonical pointmap (already metric-corrected)...
       updatePointmap(nkf.X_canon, nkf.C, n0, Xf_canon, Cf);
+      // ...and blend in the independent stereo depth observation
+      if (have_stereo) {
+        updatePointmap(nkf.X_canon, nkf.C, n0,
+                       (o_lr.Xi.view({-1, 3}) * (float)scale_ema).contiguous(),
+                       o_lr.Ci.view({-1, 1}).contiguous());
+      }
       nkf.N = n0;
       keyframes.push_back(std::move(nkf));
-      // INTEGRATION POINT: enqueue global factor-graph optimisation here
-      // (gauss_newton_rays_cuda over retrieval + consecutive edges). See DESIGN.
+
+      // loop closure + global Gauss-Newton over all keyframes
+      onNewKeyframe();
+      // the backend may have moved the newest keyframe -> report its pose
+      fillPose(res, keyframes.back().T_WC, true);
     }
     frame_count++;
     return res;
@@ -505,6 +810,10 @@ bool Mast3rSlamCore::start() {
 }
 
 PoseResult Mast3rSlamCore::process(const FrameInput &in) { return impl_->process(in); }
+PoseResult Mast3rSlamCore::processStereo(const FrameInput &left,
+                                         const FrameInput &right) {
+  return impl_->processStereo(left, right);
+}
 void Mast3rSlamCore::finish() { impl_->finish(); }
 
 }  // namespace mast3r_slam
