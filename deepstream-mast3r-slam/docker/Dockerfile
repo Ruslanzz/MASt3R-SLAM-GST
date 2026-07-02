@@ -79,7 +79,8 @@ RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.d
 # fine (setup.py honors this override); arch comes from TORCH_CUDA_ARCH_LIST.
 RUN python3 -m pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r && \
     FORCE_CUDA=1 python3 -m pip install --no-cache-dir --no-build-isolation -e . && \
-    python3 -c "import mast3r.utils.path_to_dust3r, dust3r, mast3r_slam_backends; print('mast3r + dust3r + backend OK')"
+    python3 -m pip install --no-cache-dir onnx && \
+    python3 -c "import mast3r.utils.path_to_dust3r, dust3r, mast3r_slam_backends, onnx; print('mast3r + dust3r + backend + onnx OK')"
 
 WORKDIR /opt/MASt3R-SLAM-GST
 CMD ["bash"]
