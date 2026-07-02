@@ -27,8 +27,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # libtorch (C++) via the pip wheel; export its cmake prefix for our build.
+# torchvision is needed by dust3r's image utils (used by tools/export_onnx.py);
+# 0.20.1 is the matching release for torch 2.5.1.
 RUN python3 -m pip install --no-cache-dir --upgrade pip && \
-    python3 -m pip install --no-cache-dir torch==2.5.1 --index-url ${TORCH_INDEX_URL}
+    python3 -m pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 \
+        --index-url ${TORCH_INDEX_URL}
 
 WORKDIR /opt/MASt3R-SLAM-GST
 COPY . /opt/MASt3R-SLAM-GST
