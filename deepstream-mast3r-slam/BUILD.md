@@ -108,55 +108,63 @@ gst-inspect-1.0 nvdsmast3rslam
 Нужны два движка: **энкодер** (его гоняет `gst-nvinfer`) и **декодер** (его
 гоняет наш элемент). Все шаги — внутри контейнера.
 
-### 3.1. Поставить Python-зависимости MASt3R (для экспорта ONNX)
+### 3.1. Python-зависимости MASt3R — уже в образе
 
-Экспорт импортирует `mast3r_slam.mast3r_utils`, которому нужны submodule MASt3R и
-скомпилированный backend репозитория:
+Начиная с текущей версии `docker/Dockerfile`, обе установки выполняются **при
+сборке образа** (сборка CUDA-кода без GPU включается через `FORCE_CUDA=1`,
+который поддержан в `setup.py`):
+
+```dockerfile
+RUN python3 -m pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r && \
+    FORCE_CUDA=1 python3 -m pip install --no-cache-dir --no-build-isolation -e .
+```
+
+Вручную в контейнере ничего ставить не нужно. (Если вы монтируете репозиторий
+поверх `/opt/MASt3R-SLAM-GST` через `-v`, editable-установки продолжают
+работать: пакеты ссылаются на тот же путь.)
+
+> Примечание: `--no-build-isolation` обязателен — curope (CUDA-RoPE из CroCo),
+> lietorch и backend репозитория импортируют torch в `setup.py`. Если curope не
+> соберётся — не блокер: CroCo откатится на PyTorch-реализацию RoPE, что для
+> ONNX-экспорта даже предпочтительнее.
+
+### 3.2–3.3. Экспорт ONNX и сборка движков — один скрипт
+
+Движки **нельзя** подготовить при сборке образа: `trtexec` требует живой GPU, а
+готовый `.engine` привязан к конкретной карте и версии TensorRT. Поэтому этот
+шаг выполняется один раз **внутри контейнера на машине с 1660 Ti**:
 
 ```bash
 cd /opt/MASt3R-SLAM-GST
-# --no-build-isolation обязателен: curope (CUDA-RoPE из CroCo) и backend репозитория
-# импортируют torch в setup.py, а в изолированном build-окружении pip его нет.
-pip install --no-build-isolation -e thirdparty/mast3r
-pip install --no-build-isolation -e .          # собирает CUDA-расширение (нужен nvcc)
+bash deepstream-mast3r-slam/tools/build_engines.sh          # fp16, 384x512 (дефолт)
+# варианты: build_engines.sh fp32   |   build_engines.sh fp16 384 512
 ```
 
-> Если curope всё же не соберётся — не блокер для экспорта ONNX: CroCo при
-> отсутствии curope автоматически откатывается на PyTorch-реализацию RoPE
-> (увидите предупреждение «cannot find CuRoPE2D»), и для ONNX-экспорта этот
-> путь даже предпочтительнее.
+Скрипт делает по порядку:
+1. проверяет наличие чекпойнта `checkpoints/MASt3R_..._metric.pth` (если нет —
+   печатает команду `wget`);
+2. запускает `tools/export_onnx.py` → `checkpoints/mast3r_encoder.onnx` и
+   `checkpoints/mast3r_decoder.onnx` (пропускает, если файлы уже есть);
+3. находит `trtexec` (`/usr/src/tensorrt/bin`, `/opt/tensorrt/bin` или PATH;
+   можно указать явно: `TRTEXEC=/path/to/trtexec bash ...`);
+4. собирает оба движка: `--fp16 --memPoolSize=workspace:2048` (FP16 и лимит
+   workspace 2 ГБ — чтобы уложиться в 6 ГБ VRAM). Каждый движок строится
+   несколько минут — это нормально;
+5. в конце показывает `ls -lh` готовых `.engine`.
 
-### 3.2. Экспорт ONNX (энкодер + декодер)
+Результат (используется на шаге 4):
+* `checkpoints/mast3r_encoder.engine` — путь прописан в
+  `configs/config_infer_mast3r_encoder.txt` (`model-engine-file=...`);
+* `checkpoints/mast3r_decoder.engine` — дефолт `DEC_ENGINE` в `pipelines/*.sh`.
 
-```bash
-python deepstream-mast3r-slam/tools/export_onnx.py \
-    --checkpoint checkpoints/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth \
-    --height 384 --width 512 --which both
-# -> checkpoints/mast3r_encoder.onnx, checkpoints/mast3r_decoder.onnx
-```
+`--height/--width` (дефолт 384×512) должны совпадать с
+`infer-dims=3;384;512` в конфиге nvinfer и `MUX_W/MUX_H` в пайплайнах.
+Повторять шаг нужно только при смене GPU, версии TensorRT или разрешения
+(перед пересборкой удалите старые `.onnx`/`.engine`).
 
-`--height/--width` должны совпадать с разрешением входа модели после ресайза
-(для 4:3 это обычно 384×512). Те же значения стоят в
-`configs/config_infer_mast3r_encoder.txt` (`infer-dims=3;384;512`) и в
-`pipelines/*.sh` (`MUX_W/MUX_H`).
-
-### 3.3. Сборка движков (trtexec)
-
-```bash
-TRTEXEC=/usr/src/tensorrt/bin/trtexec
-# На 6 ГБ 1660 Ti собираем в FP16 (вдвое меньше памяти движка/активаций) и
-# ограничиваем рабочую область, чтобы сборка уложилась в VRAM.
-$TRTEXEC --onnx=checkpoints/mast3r_encoder.onnx \
-         --saveEngine=checkpoints/mast3r_encoder.engine \
-         --fp16 --memPoolSize=workspace:2048
-$TRTEXEC --onnx=checkpoints/mast3r_decoder.onnx \
-         --saveEngine=checkpoints/mast3r_decoder.engine \
-         --fp16 --memPoolSize=workspace:2048
-# (FP32 — ближе к эталону, но требует заметно больше VRAM; на 6 ГБ может не влезть.)
-```
-
-> `network-mode` в `configs/config_infer_mast3r_encoder.txt` уже стоит `2` (FP16),
-> чтобы совпадать с FP16-движком энкодера.
+> FP32 ближе к эталону, но требует заметно больше VRAM — на 6 ГБ может не
+> влезть. `network-mode=2` (FP16) в конфиге nvinfer уже согласован с
+> FP16-движком энкодера.
 
 Важно: имена входов/выходов ONNX **должны совпадать** с конфигом и кодом:
 * энкодер: выходы `feat`, `pos` (см. `output-blob-names=feat;pos`);

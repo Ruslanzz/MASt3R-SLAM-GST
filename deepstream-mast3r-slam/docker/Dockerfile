@@ -50,5 +50,14 @@ RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.d
     ldconfig && \
     (gst-inspect-1.0 nvdsmast3rslam || echo "[warn] gst-inspect could not load the element")
 
+# Python side for the ONNX export tooling (tools/export_onnx.py):
+# MASt3R (+dust3r, curope) and the repo package with its CUDA backend + lietorch.
+# --no-build-isolation: curope / lietorch / the backend import torch in setup.py.
+# FORCE_CUDA=1: docker build has no visible GPU, but nvcc compiles the kernels
+# fine (setup.py honors this override); arch comes from TORCH_CUDA_ARCH_LIST.
+RUN python3 -m pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r && \
+    FORCE_CUDA=1 python3 -m pip install --no-cache-dir --no-build-isolation -e . && \
+    python3 -c "import mast3r.utils.path_to_dust3r, dust3r, mast3r_slam_backends; print('mast3r + dust3r + backend OK')"
+
 WORKDIR /opt/MASt3R-SLAM-GST
 CMD ["bash"]
