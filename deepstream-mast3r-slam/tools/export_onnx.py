@@ -39,6 +39,79 @@ def make_grid_pos(h, w, patch=16):
     return torch.cartesian_prod(y, x).view(1, hp * wp, 2)
 
 
+class ExportRoPE2D(torch.nn.Module):
+    """Export-friendly drop-in replacement for croco's RoPE2D / cuRoPE2D.
+
+    The stock implementations cannot go through the legacy ONNX exporter:
+    cuRoPE2D is a custom CUDA autograd Function, and the PyTorch fallback uses
+    ``tokens.chunk(2)`` (a multi-output node — the remaining trigger of the
+    tuple-lowering INTERNAL ASSERT), a python dict cache and
+    ``int(positions.max())``. This module precomputes the cos/sin tables as
+    constant buffers and uses tensor slicing only.
+    """
+
+    def __init__(self, freq, max_pos, head_dims):
+        super().__init__()
+        for hd in sorted({int(d) for d in head_dims}):
+            D = hd // 2
+            inv = 1.0 / (freq ** (torch.arange(0, D, 2).float() / D))
+            t = torch.arange(max_pos).float()
+            fr = torch.outer(t, inv)          # (max_pos, D/2)
+            fr = torch.cat((fr, fr), dim=-1)  # (max_pos, D)
+            self.register_buffer(f"cos_{D}", fr.cos(), persistent=False)
+            self.register_buffer(f"sin_{D}", fr.sin(), persistent=False)
+
+    def _apply1d(self, tok, pos1d, cos, sin):
+        c = torch.nn.functional.embedding(pos1d, cos)[:, None, :, :]
+        s = torch.nn.functional.embedding(pos1d, sin)[:, None, :, :]
+        h = tok.shape[-1] // 2
+        rot = torch.cat((-tok[..., h:], tok[..., :h]), dim=-1)  # rotate_half
+        return tok * c + rot * s
+
+    def forward(self, tokens, positions):
+        D = tokens.size(3) // 2  # python int under trace (fixed shapes)
+        cos = getattr(self, f"cos_{D}")
+        sin = getattr(self, f"sin_{D}")
+        y = tokens[..., :D]
+        x = tokens[..., D:]
+        y = self._apply1d(y, positions[:, :, 0].long(), cos, sin)
+        x = self._apply1d(x, positions[:, :, 1].long(), cos, sin)
+        return torch.cat((x, y), dim=-1)
+
+
+def swap_rope_for_export(model, h, w):
+    """Replace every rope reference (self-attention, cross-attention, model) by
+    one shared ExportRoPE2D instance. Head dims are derived from the attention
+    modules themselves (qkv for self-attn, projq for croco cross-attn)."""
+    patch = model.patch_embed.patch_size[0]
+    freq = 100.0
+    rp = getattr(model, "rope", None)
+    if rp is not None:
+        freq = float(getattr(rp, "base", getattr(rp, "freq", 100.0)))
+
+    head_dims = set()
+    holders = []
+    for m in model.modules():
+        if getattr(m, "rope", None) is None or not hasattr(m, "num_heads"):
+            continue
+        if hasattr(m, "qkv"):        # croco Attention
+            head_dims.add(m.qkv.in_features // m.num_heads)
+            holders.append(m)
+        elif hasattr(m, "projq"):    # croco CrossAttention
+            head_dims.add(m.projq.in_features // m.num_heads)
+            holders.append(m)
+
+    max_pos = max(h // patch, w // patch)
+    export_rope = ExportRoPE2D(freq, max_pos, head_dims)
+    for m in holders:
+        m.rope = export_rope
+    if rp is not None:
+        model.rope = export_rope
+    print(f"[export] RoPE swapped for export: freq={freq} max_pos={max_pos} "
+          f"head_dims={sorted(head_dims)} ({len(holders)} attention modules)")
+    return export_rope
+
+
 class EncoderWrapper(torch.nn.Module):
     """Tensor-only inline of dust3r's ``_encode_image``.
 
@@ -133,6 +206,8 @@ def main():
     dev = args.device
     h, w = args.height, args.width
     model = load_mast3r(path=args.checkpoint, device=dev).eval()
+    swap_rope_for_export(model, h, w)
+    model = model.to(dev)  # move the freshly attached ExportRoPE2D buffers too
     true_shape = torch.tensor([[h, w]], dtype=torch.int32, device=dev)
 
     # token count N = (h/16)*(w/16); feat dim 1024
