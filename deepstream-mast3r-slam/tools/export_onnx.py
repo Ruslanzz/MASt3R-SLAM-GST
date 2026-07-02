@@ -27,18 +27,35 @@ import torch
 
 
 class EncoderWrapper(torch.nn.Module):
+    """Inlines dust3r's ``_encode_image`` body.
+
+    Calling ``_encode_image`` directly puts a ``(x, pos, None)`` tuple into the
+    traced graph; the legacy ONNX exporter's tuple-lowering pass crashes on the
+    None element with an INTERNAL ASSERT in dead_code_elimination.cpp. Inlining
+    the body keeps the graph tensors-only. ``pos`` is returned as int32 so the
+    TensorRT engine's output dtype matches what nvdsmast3rslam reads
+    (FrameInput.pos_dev is int32).
+    """
+
     def __init__(self, model, true_shape):
         super().__init__()
         self.model = model
         self.register_buffer("true_shape", true_shape, persistent=False)
 
     def forward(self, img):
-        feat, pos, _ = self.model._encode_image(img, self.true_shape)
-        return feat, pos
+        x, pos = self.model.patch_embed(img, true_shape=self.true_shape)
+        for blk in self.model.enc_blocks:
+            x = blk(x, pos)
+        x = self.model.enc_norm(x)
+        return x, pos.to(torch.int32)
 
 
 class DecoderWrapper(torch.nn.Module):
-    """Single decoder pass producing both views' heads (see mast3r_utils.decoder)."""
+    """Single decoder pass producing both views' heads (see mast3r_utils.decoder).
+
+    ``pos1``/``pos2`` are int32 inputs (cast to long internally): the C++ core
+    binds int32 tensors to the engine, and the encoder engine emits int32 pos.
+    """
 
     def __init__(self, model, shape1, shape2):
         super().__init__()
@@ -47,7 +64,7 @@ class DecoderWrapper(torch.nn.Module):
         self.register_buffer("shape2", shape2, persistent=False)
 
     def forward(self, feat1, pos1, feat2, pos2):
-        dec1, dec2 = self.model._decoder(feat1, pos1, feat2, pos2)
+        dec1, dec2 = self.model._decoder(feat1, pos1.long(), feat2, pos2.long())
         with torch.amp.autocast(enabled=False, device_type="cuda"):
             res1 = self.model._downstream_head(1, [t.float() for t in dec1], self.shape1)
             res2 = self.model._downstream_head(2, [t.float() for t in dec2], self.shape2)
@@ -102,8 +119,9 @@ def main():
         dec = DecoderWrapper(model, true_shape, true_shape.clone()).to(dev).eval()
         f1 = torch.randn(1, n, 1024, device=dev)
         f2 = torch.randn(1, n, 1024, device=dev)
-        p1 = torch.zeros(1, n, 2, dtype=torch.long, device=dev)
-        p2 = torch.zeros(1, n, 2, dtype=torch.long, device=dev)
+        # int32 to match the encoder engine's pos output and the C++ core's I/O
+        p1 = torch.zeros(1, n, 2, dtype=torch.int32, device=dev)
+        p2 = torch.zeros(1, n, 2, dtype=torch.int32, device=dev)
         with torch.inference_mode():
             torch.onnx.export(
                 dec, (f1, p1, f2, p2), args.out_decoder,
