@@ -115,9 +115,16 @@ gst-inspect-1.0 nvdsmast3rslam
 
 ```bash
 cd /opt/MASt3R-SLAM-GST
-pip install -e thirdparty/mast3r
+# --no-build-isolation обязателен: curope (CUDA-RoPE из CroCo) и backend репозитория
+# импортируют torch в setup.py, а в изолированном build-окружении pip его нет.
+pip install --no-build-isolation -e thirdparty/mast3r
 pip install --no-build-isolation -e .          # собирает CUDA-расширение (нужен nvcc)
 ```
+
+> Если curope всё же не соберётся — не блокер для экспорта ONNX: CroCo при
+> отсутствии curope автоматически откатывается на PyTorch-реализацию RoPE
+> (увидите предупреждение «cannot find CuRoPE2D»), и для ONNX-экспорта этот
+> путь даже предпочтительнее.
 
 ### 3.2. Экспорт ONNX (энкодер + декодер)
 
