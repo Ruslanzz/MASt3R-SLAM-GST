@@ -41,7 +41,13 @@ RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.d
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} \
         -DCMAKE_BUILD_TYPE=Release && \
     cmake --build /tmp/build -j && \
-    cp /tmp/build/libnvdsmast3rslam.so /opt/nvidia/deepstream/deepstream/lib/gstreamer-1.0/ && \
+    GST_PLUGIN_DIR="$(pkg-config --variable=pluginsdir gstreamer-1.0)" && \
+    mkdir -p "${GST_PLUGIN_DIR}" && \
+    cp /tmp/build/libnvdsmast3rslam.so "${GST_PLUGIN_DIR}/" && \
+    TORCH_LIB="$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"lib"))')" && \
+    printf '%s\n' "${TORCH_LIB}" "/opt/nvidia/deepstream/deepstream/lib" \
+        > /etc/ld.so.conf.d/mast3rslam.conf && \
+    ldconfig && \
     (gst-inspect-1.0 nvdsmast3rslam || echo "[warn] gst-inspect could not load the element")
 
 WORKDIR /opt/MASt3R-SLAM-GST

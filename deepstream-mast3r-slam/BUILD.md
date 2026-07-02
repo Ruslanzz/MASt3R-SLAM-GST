@@ -95,8 +95,9 @@ gst-inspect-1.0 nvdsmast3rslam      # должен показать свойст
 
 ```bash
 bash deepstream-mast3r-slam/build_local.sh
+# GStreamer plugin dir (DeepStream 7.1 uses the system dir, not lib/gstreamer-1.0):
 cp deepstream-mast3r-slam/build/libnvdsmast3rslam.so \
-   /opt/nvidia/deepstream/deepstream/lib/gstreamer-1.0/
+   "$(pkg-config --variable=pluginsdir gstreamer-1.0)/"
 gst-inspect-1.0 nvdsmast3rslam
 ```
 
@@ -251,7 +252,7 @@ num_keyframes, is_keyframe, mode`. Читается pad-probe'ом на src-па
 
 | Симптом | Причина / решение |
 |---------|-------------------|
-| `gst-inspect-1.0 nvdsmast3rslam` пусто | `.so` не в пути плагинов. Скопируйте в `/opt/nvidia/deepstream/deepstream/lib/gstreamer-1.0/` или задайте `GST_PLUGIN_PATH`; проверьте `ldd libnvdsmast3rslam.so` на ненайденные libtorch/TensorRT |
+| `gst-inspect-1.0 nvdsmast3rslam` пусто | `.so` не в пути плагинов — скопируйте в `$(pkg-config --variable=pluginsdir gstreamer-1.0)` (в DS 7.1 каталога `lib/gstreamer-1.0` нет). Если `ldd libnvdsmast3rslam.so` показывает ненайденный libtorch — добавьте `.../torch/lib` в `LD_LIBRARY_PATH` или в `/etc/ld.so.conf.d` + `ldconfig` |
 | `no NvDsBatchMeta on buffer` | перед элементом обязателен `nvstreammux` |
 | `encoder tensor meta missing feat/pos` | имена выходов ONNX ≠ `feat;pos`, либо `infer-gie-id` ≠ `gie-unique-id` в конфиге nvinfer |
 | `failed to load decoder engine` | не задан `decoder-engine` или путь неверный; пересоберите движок под текущую версию TensorRT |

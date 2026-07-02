@@ -14,5 +14,7 @@ cmake --build "${BUILD_DIR}" -j"$(nproc)"
 
 echo "[build] libnvdsmast3rslam.so ->"
 ls -l "${BUILD_DIR}"/libnvdsmast3rslam.so
-echo "Install with: cp ${BUILD_DIR}/libnvdsmast3rslam.so \\"
-echo "    /opt/nvidia/deepstream/deepstream/lib/gstreamer-1.0/ && gst-inspect-1.0 nvdsmast3rslam"
+GST_PLUGIN_DIR="$(pkg-config --variable=pluginsdir gstreamer-1.0)"
+echo "Install with: sudo cp ${BUILD_DIR}/libnvdsmast3rslam.so ${GST_PLUGIN_DIR}/"
+echo "  then: gst-inspect-1.0 nvdsmast3rslam"
+echo "  (ensure libtorch is loadable, e.g. export LD_LIBRARY_PATH=\$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),\"lib\"))'):\$LD_LIBRARY_PATH)"
