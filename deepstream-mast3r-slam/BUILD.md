@@ -85,6 +85,16 @@ docker run --rm -it --gpus all --runtime nvidia \
     nvdsmast3rslam:ds7.1-gtx1660ti bash
 ```
 
+Если планируете смотреть результат в окне на этой же машине
+(`pipelines/*_display.sh`, см. `VISUALIZATION.md` §1b), добавьте проброс X11:
+
+```bash
+xhost +local:        # один раз на хосте
+docker run ... \
+    -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+    nvdsmast3rslam:ds7.1-gtx1660ti bash
+```
+
 Проверка внутри контейнера:
 
 ```bash
@@ -195,6 +205,12 @@ bash deepstream-mast3r-slam/pipelines/run_udp.sh rtsp rtsp://host/stream
 
 # СТЕРЕО-ГИБРИД (метрическая траектория + loop closure, см. DESIGN-STEREO.md):
 bash deepstream-mast3r-slam/pipelines/run_stereo_v4l2.sh /dev/video0 /dev/video1 0.12
+
+# ВИЗУАЛИЗАЦИЯ В ОКНО (нужен проброс X11 в docker run, см. шаг 2 и VISUALIZATION.md §1b):
+bash deepstream-mast3r-slam/pipelines/run_file_display.sh /path/to/video.mp4
+bash deepstream-mast3r-slam/pipelines/run_stereo_display.sh /dev/video0 /dev/video1 0.12
+# стрим оверлея по UDP/RTP на другую машину (headless-хост):
+VIEW_HOST=<IP ноутбука> bash deepstream-mast3r-slam/pipelines/run_stereo_viz.sh /dev/video0 /dev/video1 0.12
 ```
 
 Переопределение параметров пайплайна:

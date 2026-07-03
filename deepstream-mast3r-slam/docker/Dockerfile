@@ -19,10 +19,14 @@ ARG CUDA_ARCH=75
 ARG TORCH_CUDA_ARCH_LIST=7.5
 ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 
+# gstreamer1.0-x provides the X11 window sinks (ximagesink/xvimagesink) and
+# plugins-good provides autovideosink + v4l2src — needed by the *_display.sh
+# pipelines (VISUALIZATION.md 1b); no-ops if the base image already has them.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git build-essential cmake ninja-build pkg-config \
         python3 python3-pip python3-dev \
         libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+        gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-x \
         libeigen3-dev \
     && rm -rf /var/lib/apt/lists/*
 
