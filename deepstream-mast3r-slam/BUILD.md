@@ -274,6 +274,7 @@ num_keyframes, is_keyframe, mode`. Читается pad-probe'ом на src-па
 | CMake не находит Torch | задайте `-DTorch_DIR=$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"share","cmake","Torch"))')` |
 | Линковка: нет `nvinfer`/`nvds_*` | поправьте `-DDEEPSTREAM_DIR=` и `-DTENSORRT_DIR=` в CMake под вашу установку |
 | `mount error: stat failed: /dev/nvidia-modeset` при `docker run` | capability `display` (входит в `NVIDIA_DRIVER_CAPABILITIES=all`) требует модуль ядра `nvidia_modeset`, которого нет на headless-хостах. Используйте `-e NVIDIA_DRIVER_CAPABILITIES=compute,utility,video` (дисплей в контейнере не нужен) или `sudo modprobe nvidia_modeset` на хосте |
+| `no element "nvvideoconvert"` / `"nvinfer"` в рантайме | в образ запёкся реестр GStreamer со сборки (без GPU NVIDIA-плагины не загрузили libcuda и попали в blacklist). Выполните `rm -rf ~/.cache/gstreamer-1.0` и повторите; в свежих образах кэш уже не запекается |
 | `out of memory` / OOM на 1660 Ti | стройте движки в FP16 (шаг 3.3), уменьшите `--memPoolSize=workspace`, снизьте `MUX_W/MUX_H`, прореживайте кадры (см. §5b) |
 | `no kernel image is available` / незапуск ядер | движок/расширение собраны не под sm_75; пересоберите с `-DCMAKE_CUDA_ARCHITECTURES=75` и `TORCH_CUDA_ARCH_LIST=7.5` |
 
