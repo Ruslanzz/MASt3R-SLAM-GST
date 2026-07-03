@@ -6,7 +6,9 @@ from torch.utils.cpp_extension import BuildExtension, CppExtension
 import os
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-has_cuda = torch.cuda.is_available()
+# FORCE_CUDA=1 allows compiling the CUDA backend where no GPU is visible at
+# build time (e.g. docker build) but nvcc is present.
+has_cuda = torch.cuda.is_available() or os.environ.get("FORCE_CUDA", "") == "1"
 
 include_dirs = [
     os.path.join(ROOT, "mast3r_slam/backend/include"),
