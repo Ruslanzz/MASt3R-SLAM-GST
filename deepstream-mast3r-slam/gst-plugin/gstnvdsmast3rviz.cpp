@@ -8,6 +8,7 @@
  */
 #include "gstnvdsmast3rviz.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
