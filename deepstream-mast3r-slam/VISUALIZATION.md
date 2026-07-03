@@ -28,6 +28,37 @@ gst-launch-1.0 udpsrc port=5600 \
 
 (порт 5600 совместим с QGroundControl: Settings → Video → UDP h.264, 5600.)
 
+## 1b. Окно на самой машине (sink пайплайна)
+
+Отдельный sink-элемент не нужен: оверлей уже врисован в кадры (`nvdsmast3rviz`
+→ display-meta → `nvdsosd`), достаточно завершить пайплайн оконным синком.
+Готовые скрипты:
+
+```bash
+# на хосте, один раз — разрешить X11 из контейнера:
+xhost +local:
+
+# контейнер запускать с пробросом X11 (добавить к обычной команде docker run):
+#   -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix
+
+# видеофайл в окно:
+bash deepstream-mast3r-slam/pipelines/run_file_display.sh /path/video.mp4
+# стерео в окно (лево|право плиткой):
+bash deepstream-mast3r-slam/pipelines/run_stereo_display.sh /dev/video0 /dev/video1 0.12
+```
+
+Выбор синка — переменной `SINK`:
+
+| `SINK` | Элемент | Когда использовать |
+|---|---|---|
+| (не задан) | `autovideosink` → xv/ximagesink | **дефолт**: чистый X11, работает на Optimus-ноутбуках и хостах без модуля `nvidia_modeset` (наш случай); кадр копируется в системную память — при 512×384 и 1–2 FPS незаметно |
+| `egl` | `nveglglessink` | полный дисплейный стек NVIDIA: загружен `nvidia_modeset`, контейнер с `NVIDIA_DRIVER_CAPABILITIES=...,graphics,display` |
+| `xv` | `xvimagesink` | явный XVideo |
+
+Типичные ошибки: `Could not initialise EGL` / `nvidia-modeset` → используйте
+дефолтный X11-синк; `cannot open display` → не проброшен `DISPLAY`/X11-сокет
+или не выполнен `xhost +local:`.
+
 ## 2. Стрим в ROS 2 (полный 3D в RViz)
 
 Мост компилируется опционально: соберите образ с `--build-arg WITH_ROS2=1`
