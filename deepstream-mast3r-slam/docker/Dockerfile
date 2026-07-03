@@ -70,7 +70,12 @@ RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.d
         "/opt/ros/humble/lib" \
         > /etc/ld.so.conf.d/mast3rslam.conf && \
     ldconfig && \
-    (gst-inspect-1.0 nvdsmast3rslam || echo "[warn] gst-inspect could not load the element")
+    (gst-inspect-1.0 nvdsmast3rslam || echo "[warn] gst-inspect could not load the element") && \
+    rm -rf /root/.cache/gstreamer-1.0
+# ^ the registry cache MUST NOT be baked into the image: docker build has no
+# GPU, so the NVIDIA GStreamer plugins (nvvideoconvert, nvinfer, ...) fail to
+# load libcuda and get blacklisted; the stale blacklist would persist at
+# runtime ("no element nvvideoconvert"). A fresh scan happens on first use.
 
 # Python side for the ONNX export tooling (tools/export_onnx.py):
 # MASt3R (+dust3r, curope) and the repo package with its CUDA backend + lietorch.
