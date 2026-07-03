@@ -47,7 +47,7 @@ deepstream-mast3r-slam/
 ├── tools/
 │   └── export_onnx.py               # export encoder + decoder ONNX
 ├── docker/                          # Dockerfile (DeepStream 7.1, sm_75) + build.sh
-└── pipelines/                       # run_file / run_v4l2 / run_udp
+└── pipelines/                       # run_slam (universal mono/stereo) + specialized scripts
 ```
 
 ## Build (DeepStream 7.1, GTX 1660 Ti)
@@ -78,10 +78,19 @@ trtexec --onnx=checkpoints/mast3r_decoder.onnx --saveEngine=checkpoints/mast3r_d
 
 ## Run
 
+`run_slam.sh` is the universal entry point: the same script (and the same
+element, `stereo-mode=auto`) handles a mono and a stereo camera; sources can be
+a file, `/dev/videoN`, `rtsp://` or `udp://:port`; `VIZ=window|udp` adds the
+overlay visualization, `ROS=true` the ROS 2 bridge:
+
 ```bash
+bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/to/video.mp4          # mono
+bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12  # stereo (baseline, m)
+# specialized scripts (same pipelines, fixed configuration):
 bash deepstream-mast3r-slam/pipelines/run_file.sh /path/to/video.mp4
 bash deepstream-mast3r-slam/pipelines/run_v4l2.sh /dev/video0
 bash deepstream-mast3r-slam/pipelines/run_udp.sh udp 5000
+bash deepstream-mast3r-slam/pipelines/run_stereo_v4l2.sh /dev/video0 /dev/video1 0.12
 # output: logs/<seq>.txt (TUM trajectory), logs/<seq>.ply
 ```
 
@@ -97,6 +106,13 @@ bash deepstream-mast3r-slam/pipelines/run_udp.sh udp 5000
 | `save-results` | `true` | write `.txt`/`.ply` on EOS |
 | `conf-threshold` | `1.5` | confidence filter for the `.ply` |
 | `gpu-id` | `0` | CUDA device |
+| `stereo-mode` | `auto` | `auto`: per buffer — left+right in the batch → stereo, single frame → mono; `mono`/`stereo` force the mode (see `DESIGN-STEREO.md`) |
+| `baseline` | `0.12` | stereo baseline in meters (sets the metric scale) |
+| `left-source-id` / `right-source-id` | `0` / `1` | `nvstreammux` source-ids of the cameras |
+| `loop-closure` | `true` | retrieval + factor graph + global GN |
+| `loop-sim-thresh` | `0.90` | cosine threshold for loop candidates |
+| `emit-cloud` | `true` | attach the keyframe cloud meta (for `nvdsmast3rviz`/ROS) |
+| `cloud-max-points` | `50000` | stride of the emitted cloud |
 
 **Online pose output** is `NvDsUserMeta` of type `NVDS_MAST3R_SLAM_POSE_META`
 (`NvDsMast3rSlamPoseMeta`, see `gst-plugin/mast3r_slam_meta.h`): `frame_id`,

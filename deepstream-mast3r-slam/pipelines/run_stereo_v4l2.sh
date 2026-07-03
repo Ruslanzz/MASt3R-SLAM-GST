@@ -28,7 +28,7 @@ gst-launch-1.0 -e \
         live-source=1 batched-push-timeout=40000 ! \
     nvinfer config-file-path="${ENC_CFG}" ! \
     nvdsmast3rslam infer-gie-id=1 decoder-engine="${DEC_ENGINE}" \
-        stereo-mode=true baseline="${BASELINE}" \
+        stereo-mode=stereo baseline="${BASELINE}" \
         left-source-id=0 right-source-id=1 loop-closure=true \
         save-dir="${ROOT}/../logs" sequence-name=stereo ! \
     nvvideoconvert ! fakesink sync=false
@@ -41,5 +41,5 @@ gst-launch-1.0 -e \
 #       'video/x-raw(memory:NVMM),format=RGBA' ! m.sink_1 \
 #     nvstreammux name=m batch-size=2 width=512 height=384 ! \
 #     nvinfer config-file-path=".../config_infer_mast3r_encoder_stereo.txt" ! \
-#     nvdsmast3rslam stereo-mode=true baseline=0.12 decoder-engine=... ! \
+#     nvdsmast3rslam stereo-mode=stereo baseline=0.12 decoder-engine=... ! \
 #     nvvideoconvert ! fakesink sync=false

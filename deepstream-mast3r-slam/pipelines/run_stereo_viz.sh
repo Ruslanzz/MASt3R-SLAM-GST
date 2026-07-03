@@ -37,7 +37,7 @@ gst-launch-1.0 -e \
         live-source=1 batched-push-timeout=40000 ! \
     nvinfer config-file-path="${ENC_CFG}" ! \
     nvdsmast3rslam infer-gie-id=1 decoder-engine="${DEC_ENGINE}" \
-        stereo-mode=true baseline="${BASELINE}" loop-closure=true \
+        stereo-mode=stereo baseline="${BASELINE}" loop-closure=true \
         save-dir="${ROOT}/../logs" sequence-name=stereo ! \
     nvdsmast3rviz overlay=true ros-enable="${ROS}" ! \
     nvmultistreamtiler rows=1 columns=2 width=1024 height=384 ! \

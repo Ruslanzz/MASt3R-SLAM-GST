@@ -37,6 +37,18 @@ G_BEGIN_DECLS
 typedef struct _GstNvDsMast3rSlam GstNvDsMast3rSlam;
 typedef struct _GstNvDsMast3rSlamClass GstNvDsMast3rSlamClass;
 
+/* stereo-mode property: one element handles both camera setups.
+ *  AUTO   — decide per buffer: batch carrying left+right source-ids -> stereo,
+ *           anything else -> mono. A mono pipeline needs no configuration at
+ *           all; a stereo pipeline only needs the baseline.
+ *  MONO   — force monocular processing of every batch frame.
+ *  STEREO — force pairing by source-id (lone right-only batches are skipped). */
+typedef enum {
+  GST_NVDSMAST3RSLAM_MODE_AUTO = 0,
+  GST_NVDSMAST3RSLAM_MODE_MONO = 1,
+  GST_NVDSMAST3RSLAM_MODE_STEREO = 2,
+} GstNvDsMast3rSlamStereoMode;
+
 struct _GstNvDsMast3rSlam {
   GstBaseTransform parent;
 
@@ -52,7 +64,7 @@ struct _GstNvDsMast3rSlam {
   gint gpu_id;               /* CUDA device                                     */
 
   /* stereo-hybrid mode (DESIGN-STEREO.md) */
-  gboolean stereo_mode;      /* pair batch frames; metric scale from baseline   */
+  GstNvDsMast3rSlamStereoMode stereo_mode; /* auto (default) / mono / stereo    */
   gdouble baseline;          /* stereo baseline, meters                          */
   gint left_source_id;       /* nvstreammux source-id of the left camera         */
   gint right_source_id;      /* nvstreammux source-id of the right camera        */
@@ -70,6 +82,10 @@ struct _GstNvDsMast3rSlam {
   /* C++ SLAM core (PIMPL) */
   mast3r_slam::Mast3rSlamCore *core;
   guint64 frame_num;
+  /* AUTO mode: set once a batch has carried both left+right source-ids. From
+   * then on a lone right frame is a dropped-left stereo batch, not a mono
+   * camera, and must not be fed into the left-camera track. */
+  gboolean stereo_seen;
 };
 
 struct _GstNvDsMast3rSlamClass {

@@ -67,6 +67,27 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE(
 #define gst_nvdsmast3rslam_parent_class parent_class
 G_DEFINE_TYPE(GstNvDsMast3rSlam, gst_nvdsmast3rslam, GST_TYPE_BASE_TRANSFORM);
 
+#define GST_TYPE_NVDSMAST3RSLAM_STEREO_MODE \
+  (gst_nvdsmast3rslam_stereo_mode_get_type())
+static GType gst_nvdsmast3rslam_stereo_mode_get_type(void) {
+  static GType mode_type = 0;
+  static const GEnumValue modes[] = {
+      {GST_NVDSMAST3RSLAM_MODE_AUTO,
+       "Per buffer: left+right in the batch -> stereo, otherwise mono", "auto"},
+      {GST_NVDSMAST3RSLAM_MODE_MONO,
+       "Force monocular SLAM on every batch frame", "mono"},
+      {GST_NVDSMAST3RSLAM_MODE_STEREO,
+       "Force left/right pairing by source-id (metric scale from baseline)",
+       "stereo"},
+      {0, nullptr, nullptr},
+  };
+  if (g_once_init_enter(&mode_type)) {
+    GType t = g_enum_register_static("GstNvDsMast3rSlamStereoMode", modes);
+    g_once_init_leave(&mode_type, t);
+  }
+  return mode_type;
+}
+
 static void gst_nvdsmast3rslam_set_property(GObject *object, guint prop_id,
                                             const GValue *value,
                                             GParamSpec *pspec);
@@ -143,10 +164,14 @@ static void gst_nvdsmast3rslam_class_init(GstNvDsMast3rSlamClass *klass) {
                        (GParamFlags)G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_STEREO_MODE,
-      g_param_spec_boolean("stereo-mode", "stereo-mode",
-                           "Pair batch frames (left/right) and anchor metric "
-                           "scale from the stereo baseline",
-                           FALSE, (GParamFlags)G_PARAM_READWRITE));
+      g_param_spec_enum("stereo-mode", "stereo-mode",
+                        "Camera setup: auto (default) detects per buffer — a "
+                        "batch carrying both left and right source-ids runs "
+                        "stereo (metric scale from the baseline), a single "
+                        "frame runs mono; mono/stereo force the mode",
+                        GST_TYPE_NVDSMAST3RSLAM_STEREO_MODE,
+                        GST_NVDSMAST3RSLAM_MODE_AUTO,
+                        (GParamFlags)G_PARAM_READWRITE));
   g_object_class_install_property(
       gobject_class, PROP_BASELINE,
       g_param_spec_double("baseline", "baseline",
@@ -187,8 +212,9 @@ static void gst_nvdsmast3rslam_class_init(GstNvDsMast3rSlamClass *klass) {
 
   gst_element_class_set_static_metadata(
       element_class, "MASt3R-SLAM", "Filter/Analyzer/Video",
-      "Monocular dense SLAM driven by gst-nvinfer encoder tensors; emits poses "
-      "as NvDsUserMeta and saves trajectory/point-cloud on EOS",
+      "Dense SLAM driven by gst-nvinfer encoder tensors; works with a mono or "
+      "a stereo camera (auto-detected per buffer), emits poses as NvDsUserMeta "
+      "and saves trajectory/point-cloud on EOS",
       "MASt3R-SLAM DeepStream integration");
 
   gst_element_class_add_pad_template(
@@ -207,7 +233,7 @@ static void gst_nvdsmast3rslam_init(GstNvDsMast3rSlam *self) {
   self->save_results = TRUE;
   self->conf_threshold = 1.5;
   self->gpu_id = 0;
-  self->stereo_mode = FALSE;
+  self->stereo_mode = GST_NVDSMAST3RSLAM_MODE_AUTO;
   self->baseline = 0.12;
   self->left_source_id = 0;
   self->right_source_id = 1;
@@ -218,6 +244,7 @@ static void gst_nvdsmast3rslam_init(GstNvDsMast3rSlam *self) {
   self->core = nullptr;
   self->frame_num = 0;
   self->video_info_valid = FALSE;
+  self->stereo_seen = FALSE;
 
   gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
   gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), FALSE);
@@ -257,7 +284,10 @@ static void gst_nvdsmast3rslam_set_property(GObject *object, guint prop_id,
     case PROP_SAVE_RESULTS: self->save_results = g_value_get_boolean(value); break;
     case PROP_CONF_THRESHOLD: self->conf_threshold = g_value_get_double(value); break;
     case PROP_GPU_ID: self->gpu_id = g_value_get_int(value); break;
-    case PROP_STEREO_MODE: self->stereo_mode = g_value_get_boolean(value); break;
+    case PROP_STEREO_MODE:
+      self->stereo_mode =
+          (GstNvDsMast3rSlamStereoMode)g_value_get_enum(value);
+      break;
     case PROP_BASELINE: self->baseline = g_value_get_double(value); break;
     case PROP_LEFT_SOURCE_ID: self->left_source_id = g_value_get_int(value); break;
     case PROP_RIGHT_SOURCE_ID: self->right_source_id = g_value_get_int(value); break;
@@ -282,7 +312,7 @@ static void gst_nvdsmast3rslam_get_property(GObject *object, guint prop_id,
     case PROP_SAVE_RESULTS: g_value_set_boolean(value, self->save_results); break;
     case PROP_CONF_THRESHOLD: g_value_set_double(value, self->conf_threshold); break;
     case PROP_GPU_ID: g_value_set_int(value, self->gpu_id); break;
-    case PROP_STEREO_MODE: g_value_set_boolean(value, self->stereo_mode); break;
+    case PROP_STEREO_MODE: g_value_set_enum(value, self->stereo_mode); break;
     case PROP_BASELINE: g_value_set_double(value, self->baseline); break;
     case PROP_LEFT_SOURCE_ID: g_value_set_int(value, self->left_source_id); break;
     case PROP_RIGHT_SOURCE_ID: g_value_set_int(value, self->right_source_id); break;
@@ -320,6 +350,7 @@ static gboolean gst_nvdsmast3rslam_start(GstBaseTransform *trans) {
     return FALSE;
   }
   self->frame_num = 0;
+  self->stereo_seen = FALSE;
   return TRUE;
 }
 
@@ -500,61 +531,90 @@ static GstFlowReturn gst_nvdsmast3rslam_transform_ip(GstBaseTransform *trans,
                   ? (double)GST_BUFFER_PTS(buf) / (double)GST_SECOND
                   : (double)self->frame_num / 30.0;
 
-  if (self->stereo_mode) {
-    /* Pair the batch frames by source-id: left drives SLAM, right anchors the
-     * metric scale (DESIGN-STEREO.md). Degrades to mono if right is missing. */
-    mast3r_slam::FrameInput left{}, rightf{};
-    gboolean have_l = FALSE, have_r = FALSE;
-    NvDsFrameMeta *left_fm = nullptr;
+  /* Explicit MONO: every batch frame feeds the (single) SLAM track. */
+  if (self->stereo_mode == GST_NVDSMAST3RSLAM_MODE_MONO) {
     for (NvDsMetaList *l = batch_meta->frame_meta_list; l != nullptr;
          l = l->next) {
-      NvDsFrameMeta *fm = (NvDsFrameMeta *)l->data;
-      if ((gint)fm->source_id == self->left_source_id) {
-        have_l = build_frame_input(self, buf, fm, ts, &left);
-        left_fm = fm;
-      } else if ((gint)fm->source_id == self->right_source_id) {
-        have_r = build_frame_input(self, buf, fm, ts, &rightf);
-      }
-    }
-    if (have_l) {
+      NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l->data;
+      mast3r_slam::FrameInput fin{};
+      if (!build_frame_input(self, buf, frame_meta, ts, &fin)) continue;
+
       mast3r_slam::PoseResult pose;
       try {
-        pose = have_r ? self->core->processStereo(left, rightf)
-                      : self->core->process(left);
+        pose = self->core->process(fin);
       } catch (const std::exception &e) {
-        GST_WARNING_OBJECT(self, "stereo frame processing error: %s", e.what());
-        self->frame_num++;
-        return GST_FLOW_OK;
+        GST_WARNING_OBJECT(self, "frame processing error: %s", e.what());
+        continue;
       }
-      if (!have_r)
-        GST_LOG_OBJECT(self, "right frame missing; processed mono");
       if (pose.valid) {
-        attach_pose_meta(batch_meta, left_fm, pose);
+        attach_pose_meta(batch_meta, frame_meta, pose);
         if (pose.is_keyframe && self->emit_cloud)
-          attach_cloud_meta(self, batch_meta, left_fm);
+          attach_cloud_meta(self, batch_meta, frame_meta);
       }
     }
     self->frame_num++;
     return GST_FLOW_OK;
   }
 
-  for (NvDsMetaList *l = batch_meta->frame_meta_list; l != nullptr; l = l->next) {
-    NvDsFrameMeta *frame_meta = (NvDsFrameMeta *)l->data;
-    mast3r_slam::FrameInput fin{};
-    if (!build_frame_input(self, buf, frame_meta, ts, &fin)) continue;
+  /* AUTO / STEREO: pair the batch frames by source-id. The left frame drives
+   * SLAM, the right one (if present) anchors the metric scale from the
+   * baseline (DESIGN-STEREO.md); a batch without the right frame degrades to
+   * mono, so one code path serves both camera setups. */
+  mast3r_slam::FrameInput left{}, rightf{};
+  gboolean have_l = FALSE, have_r = FALSE;
+  NvDsFrameMeta *left_fm = nullptr;
+  NvDsFrameMeta *sole_fm = nullptr;
+  guint n_frames = 0;
+  for (NvDsMetaList *l = batch_meta->frame_meta_list; l != nullptr;
+       l = l->next) {
+    NvDsFrameMeta *fm = (NvDsFrameMeta *)l->data;
+    ++n_frames;
+    sole_fm = fm;
+    if ((gint)fm->source_id == self->left_source_id) {
+      have_l = build_frame_input(self, buf, fm, ts, &left);
+      left_fm = fm;
+    } else if ((gint)fm->source_id == self->right_source_id) {
+      have_r = build_frame_input(self, buf, fm, ts, &rightf);
+    }
+  }
 
+  /* AUTO with a single-camera pipeline whose source-id is not the configured
+   * left id (e.g. the camera sits on nvstreammux sink_1): before any stereo
+   * evidence a single-frame batch IS the mono camera — process it as such.
+   * Once a batch has carried both ids, a lone right frame means the left
+   * frame of a stereo batch was dropped and must not join the left track. */
+  if (self->stereo_mode == GST_NVDSMAST3RSLAM_MODE_AUTO && !self->stereo_seen &&
+      n_frames == 1 && !have_l) {
+    have_l = build_frame_input(self, buf, sole_fm, ts, &left);
+    left_fm = sole_fm;
+    have_r = FALSE;
+  }
+
+  if (have_l) {
+    if (have_r) self->stereo_seen = TRUE;
     mast3r_slam::PoseResult pose;
     try {
-      pose = self->core->process(fin);
+      pose = have_r ? self->core->processStereo(left, rightf)
+                    : self->core->process(left);
     } catch (const std::exception &e) {
       GST_WARNING_OBJECT(self, "frame processing error: %s", e.what());
-      continue;
+      self->frame_num++;
+      return GST_FLOW_OK;
     }
+    if (!have_r && self->stereo_seen)
+      GST_LOG_OBJECT(self, "right frame missing; processed mono");
     if (pose.valid) {
-      attach_pose_meta(batch_meta, frame_meta, pose);
+      attach_pose_meta(batch_meta, left_fm, pose);
       if (pose.is_keyframe && self->emit_cloud)
-        attach_cloud_meta(self, batch_meta, frame_meta);
+        attach_cloud_meta(self, batch_meta, left_fm);
     }
+  } else if (have_r) {
+    GST_LOG_OBJECT(self, "left frame missing; skipped right-only batch");
+  } else if (n_frames > 0) {
+    GST_WARNING_OBJECT(self,
+                       "batch has %u frame(s) but none matches left-source-id="
+                       "%d / right-source-id=%d; nothing processed",
+                       n_frames, self->left_source_id, self->right_source_id);
   }
 
   self->frame_num++;

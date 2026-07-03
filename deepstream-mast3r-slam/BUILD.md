@@ -190,9 +190,32 @@ bash deepstream-mast3r-slam/tools/build_engines.sh          # fp16, 384x512 (д�
 nvinfer (`configs/config_infer_mast3r_encoder.txt`), декодер — из свойства
 элемента (`DEC_ENGINE`, по умолчанию `checkpoints/mast3r_decoder.engine`).
 
+**Универсальный скрипт** `run_slam.sh` — один вход для МОНО и СТЕРЕО (элемент
+работает в `stereo-mode=auto` и сам определяет режим по батчу); источник —
+файл, `/dev/videoN`, `rtsp://` или `udp://:порт`; визуализация — переменной
+`VIZ` (`none`|`window`|`udp`), ROS 2 — `ROS=true`:
+
 ```bash
 cd /opt/MASt3R-SLAM-GST
 
+# МОНО: файл / камера / сеть
+bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/to/video.mp4 myseq
+bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0
+bash deepstream-mast3r-slam/pipelines/run_slam.sh rtsp://host/stream
+bash deepstream-mast3r-slam/pipelines/run_slam.sh udp://:5000
+
+# СТЕРЕО (метрическая траектория + loop closure, см. DESIGN-STEREO.md):
+bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
+bash deepstream-mast3r-slam/pipelines/run_slam.sh left.mp4 right.mp4 0.12 offroad
+
+# с визуализацией: окно (нужен проброс X11, шаг 2) или UDP-стрим оверлея
+VIZ=window bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
+VIZ=udp VIEW_HOST=<IP ноутбука> bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4
+```
+
+Специализированные скрипты (эквивалентные конфигурации, для справки):
+
+```bash
 # видеофайл
 bash deepstream-mast3r-slam/pipelines/run_file.sh /path/to/video.mp4 myseq
 
@@ -203,10 +226,10 @@ bash deepstream-mast3r-slam/pipelines/run_v4l2.sh /dev/video0
 bash deepstream-mast3r-slam/pipelines/run_udp.sh udp 5000
 bash deepstream-mast3r-slam/pipelines/run_udp.sh rtsp rtsp://host/stream
 
-# СТЕРЕО-ГИБРИД (метрическая траектория + loop closure, см. DESIGN-STEREO.md):
+# стерео-гибрид (явный stereo-mode=stereo)
 bash deepstream-mast3r-slam/pipelines/run_stereo_v4l2.sh /dev/video0 /dev/video1 0.12
 
-# ВИЗУАЛИЗАЦИЯ В ОКНО (нужен проброс X11 в docker run, см. шаг 2 и VISUALIZATION.md §1b):
+# визуализация в окно (нужен проброс X11 в docker run, см. шаг 2 и VISUALIZATION.md §1b):
 bash deepstream-mast3r-slam/pipelines/run_file_display.sh /path/to/video.mp4
 bash deepstream-mast3r-slam/pipelines/run_stereo_display.sh /dev/video0 /dev/video1 0.12
 # стрим оверлея по UDP/RTP на другую машину (headless-хост):
@@ -279,6 +302,13 @@ num_keyframes, is_keyframe, mode`. Читается pad-probe'ом на src-па
 | `save-results` | `true` | сохранять `.txt`/`.ply` по EOS |
 | `conf-threshold` | `1.5` | порог уверенности для `.ply` |
 | `gpu-id` | `0` | устройство CUDA |
+| `stereo-mode` | `auto` | `auto` — режим определяется по батчу (один кадр → моно, лево+право → стерео); `mono`/`stereo` — принудительно (DESIGN-STEREO.md §4) |
+| `baseline` | `0.12` | база стереопары, **метры** (задаёт метрический масштаб) |
+| `left-source-id` / `right-source-id` | `0` / `1` | source-id левой/правой камеры в `nvstreammux` |
+| `loop-closure` | `true` | ретривер + факторный граф + глобальная GN |
+| `loop-sim-thresh` | `0.90` | порог косинусной близости для loop-кандидатов |
+| `emit-cloud` | `true` | прикладывать облако ключевого кадра метой (для `nvdsmast3rviz`/ROS) |
+| `cloud-max-points` | `50000` | прореживание выдаваемого облака |
 
 ---
 

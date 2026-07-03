@@ -18,6 +18,10 @@ nvdsmast3rslam ─▶ nvdsmast3rviz ─▶ nvmultistreamtiler ─▶ nvdsosd ─
 `nvdsosd`, а видео кодируется и стримится по UDP:
 
 ```bash
+# универсальный скрипт (моно И стерео): VIZ=udp включает оверлей + UDP-стрим
+VIZ=udp VIEW_HOST=<IP ноутбука> bash deepstream-mast3r-slam/pipelines/run_slam.sh \
+    /dev/video0 /dev/video1 0.12          # или один источник для моно
+# либо специализированный стерео-скрипт:
 VIEW_HOST=<IP ноутбука> bash deepstream-mast3r-slam/pipelines/run_stereo_viz.sh \
     /dev/video0 /dev/video1 0.12
 # на ноутбуке:
@@ -41,7 +45,11 @@ xhost +local:
 # контейнер запускать с пробросом X11 (добавить к обычной команде docker run):
 #   -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix
 
-# видеофайл в окно:
+# универсальный скрипт: VIZ=window, моно или стерео по числу источников
+VIZ=window bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4
+VIZ=window bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
+
+# либо специализированные скрипты — видеофайл в окно:
 bash deepstream-mast3r-slam/pipelines/run_file_display.sh /path/video.mp4
 # стерео в окно (лево|право плиткой):
 bash deepstream-mast3r-slam/pipelines/run_stereo_display.sh /dev/video0 /dev/video1 0.12
