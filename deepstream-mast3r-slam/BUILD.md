@@ -193,7 +193,9 @@ nvinfer (`configs/config_infer_mast3r_encoder.txt`), декодер — из с�
 **Универсальный скрипт** `run_slam.sh` — один вход для МОНО и СТЕРЕО (элемент
 работает в `stereo-mode=auto` и сам определяет режим по батчу); источник —
 файл, `/dev/videoN`, `rtsp://` или `udp://:порт`; визуализация — переменной
-`VIZ` (`none`|`window`|`udp`), ROS 2 — `ROS=true`:
+`VIZ` (`none`|`window`|`udp`), ROS 2 — `ROS=true` (пошаговая инструкция по
+RViz — образ с `WITH_ROS2=1`, запуск, готовый конфиг `configs/mast3r_slam.rviz`
+— в `VISUALIZATION.md` §2):
 
 ```bash
 cd /opt/MASt3R-SLAM-GST

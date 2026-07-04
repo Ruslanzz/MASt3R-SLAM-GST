@@ -67,24 +67,92 @@ bash deepstream-mast3r-slam/pipelines/run_stereo_display.sh /dev/video0 /dev/vid
 дефолтный X11-синк; `cannot open display` → не проброшен `DISPLAY`/X11-сокет
 или не выполнен `xhost +local:`.
 
-## 2. Стрим в ROS 2 (полный 3D в RViz)
+## 2. Стрим в ROS 2 → RViz (полный 3D: карта + траектория)
 
-Мост компилируется опционально: соберите образ с `--build-arg WITH_ROS2=1`
-(ставится ROS 2 Humble — родной для Ubuntu 22.04 базового образа DS 7.1) и
-включите свойством `ros-enable=true` (в скрипте — `ROS=true`).
-
-Публикуется:
+Единственный способ смотреть **плотную 3D-карту и трек живьём** (в окне
+пайплайна — только видео с HUD и 2D-мини-картой). Публикуется:
 
 | Топик / канал | Тип | Когда |
 |---|---|---|
 | `/mast3r/odom` | `nav_msgs/Odometry` | каждый кадр |
 | TF `map → base_link` | `tf2` | каждый кадр |
 | `/mast3r/path` | `nav_msgs/Path` | на ключевых кадрах |
-| `/mast3r/map` | `sensor_msgs/PointCloud2` | облако свежего ключевого кадра (мир, метры) |
+| `/mast3r/map` | `sensor_msgs/PointCloud2` (xyz, метры) | облако свежего ключевого кадра |
 
-RViz на другой машине в той же сети (`--network host` уже проброшен): Fixed
-Frame = `map`, добавьте Path, PointCloud2, TF. Один и тот же `ROS_DOMAIN_ID` с
-обеих сторон.
+### 2.1. Собрать образ с ROS-мостом
+
+Мост компилируется опционально (в образ ставится ROS 2 Humble — родной для
+Ubuntu 22.04 базового образа DS 7.1):
+
+```bash
+WITH_ROS2=1 bash deepstream-mast3r-slam/docker/build.sh
+# то же самое вручную: docker build ... --build-arg WITH_ROS2=1 ...
+```
+
+### 2.2. Запустить пайплайн с публикацией
+
+Контейнер должен быть запущен с `--network host` (он уже есть в канонической
+команде из BUILD.md §2 — DDS-обнаружению нужна сеть хоста). При желании
+задайте домен: `-e ROS_DOMAIN_ID=0`.
+
+```bash
+# внутри контейнера: ROS=true включает ros-enable=true у nvdsmast3rviz
+ROS=true bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
+ROS=true bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4   # моно
+# ROS можно совмещать с картинкой: VIZ=udp ROS=true ... / VIZ=window ROS=true ...
+```
+
+### 2.3. RViz на ноутбуке / другой машине в той же сети
+
+На машине с Ubuntu 22.04:
+
+```bash
+sudo apt install ros-humble-desktop        # либо минимум: ros-humble-rviz2
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=0                     # тот же, что у контейнера
+
+ros2 topic list                            # должны появиться /mast3r/odom|path|map
+ros2 topic hz /mast3r/odom                 # проверка, что данные идут
+
+rviz2 -d deepstream-mast3r-slam/configs/mast3r_slam.rviz
+```
+
+Готовый конфиг `configs/mast3r_slam.rviz` уже включает: Grid, TF
+(`map → base_link`), **Trajectory** (Path `/mast3r/path`, бирюзовая линия),
+**Odometry** (`/mast3r/odom`, текущая поза осями XYZ), **Map** (PointCloud2
+`/mast3r/map`, раскраска по высоте (ось Y), **Decay Time = 3600 с** — облака
+ключевых кадров накапливаются в полную карту). Fixed Frame = `map`.
+
+Если настраиваете RViz вручную: Fixed Frame = `map`, затем Add → By topic →
+`/mast3r/path` (Path), `/mast3r/map` (PointCloud2: Color Transformer =
+**AxisColor** — в облаке только xyz, Decay Time = 3600), `/mast3r/odom`
+(Odometry: Keep = 1, Shape = Axes), TF.
+
+### 2.4. RViz без установки ROS на машину (docker)
+
+```bash
+xhost +local:
+docker run --rm -it --network host \
+    -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -e ROS_DOMAIN_ID=0 \
+    -v "$PWD/deepstream-mast3r-slam/configs:/cfg:ro" \
+    osrf/ros:humble-desktop \
+    rviz2 -d /cfg/mast3r_slam.rviz
+```
+
+(официальный образ сам подхватывает окружение ROS через entrypoint; работает и
+на той же машине, где крутится SLAM-контейнер, — DDS находит узлы через
+`--network host`.)
+
+### 2.5. Если топиков не видно
+
+* `ROS_DOMAIN_ID` должен совпадать с обеих сторон (не задан = 0);
+* `ROS_LOCALHOST_ONLY` не должен быть `1` ни с одной стороны;
+* SLAM-контейнер запущен с `--network host`;
+* обе машины в одной подсети, мультикаст не зарезан (VPN и «изоляция клиентов»
+  на Wi-Fi-точках ломают DDS-discovery — проще всего проводная сеть/одна точка);
+* если мост молчит уже в контейнере (нет строки про ROS в логе элемента) —
+  образ собран без `WITH_ROS2=1` либо не включён `ros-enable=true`.
 
 Свойства `nvdsmast3rviz`: `overlay` (true), `ros-enable` (false), `frame-id`
 ("map"), `child-frame-id` ("base_link"), `topic-prefix` ("/mast3r").
