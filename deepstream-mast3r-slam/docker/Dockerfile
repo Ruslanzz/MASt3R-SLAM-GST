@@ -43,6 +43,11 @@ RUN git submodule update --init --recursive || true
 
 # Optional ROS 2 Humble bridge for nvdsmast3rviz (Odometry/Path/TF/PointCloud2).
 # Build with:  --build-arg WITH_ROS2=1
+# rviz2 is installed alongside the bridge so the 3D map/trajectory can be
+# viewed from THIS container (VIZ=rviz in pipelines/run_slam.sh; needs the X11
+# forwarding from VISUALIZATION.md 1b). Without the NVIDIA `graphics`
+# capability rviz2 falls back to Mesa software rendering — fine at SLAM frame
+# rates (1-3 FPS).
 ARG WITH_ROS2=0
 RUN if [ "${WITH_ROS2}" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends curl gnupg && \
@@ -52,7 +57,8 @@ RUN if [ "${WITH_ROS2}" = "1" ]; then \
         > /etc/apt/sources.list.d/ros2.list && \
       apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rclcpp ros-humble-nav-msgs ros-humble-sensor-msgs \
-        ros-humble-geometry-msgs ros-humble-tf2-ros ros-humble-ros-environment && \
+        ros-humble-geometry-msgs ros-humble-tf2-ros ros-humble-ros-environment \
+        ros-humble-rviz2 && \
       rm -rf /var/lib/apt/lists/*; \
     fi
 

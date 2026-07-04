@@ -81,7 +81,9 @@ trtexec --onnx=checkpoints/mast3r_decoder.onnx --saveEngine=checkpoints/mast3r_d
 `run_slam.sh` is the universal entry point: the same script (and the same
 element, `stereo-mode=auto`) handles a mono and a stereo camera; sources can be
 a file, `/dev/videoN`, `rtsp://` or `udp://:port`; `VIZ=window|udp` adds the
-overlay visualization, `ROS=true` the ROS 2 bridge:
+overlay visualization, `VIZ=rviz` opens RViz with the 3D map/trajectory right
+from this container (image built `WITH_ROS2=1`), `ROS=true` the ROS 2 bridge
+alone:
 
 ```bash
 bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/to/video.mp4          # mono

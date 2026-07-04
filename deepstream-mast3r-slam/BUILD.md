@@ -193,9 +193,10 @@ nvinfer (`configs/config_infer_mast3r_encoder.txt`), декодер — из с�
 **Универсальный скрипт** `run_slam.sh` — один вход для МОНО и СТЕРЕО (элемент
 работает в `stereo-mode=auto` и сам определяет режим по батчу); источник —
 файл, `/dev/videoN`, `rtsp://` или `udp://:порт`; визуализация — переменной
-`VIZ` (`none`|`window`|`udp`), ROS 2 — `ROS=true` (пошаговая инструкция по
-RViz — образ с `WITH_ROS2=1`, запуск, готовый конфиг `configs/mast3r_slam.rviz`
-— в `VISUALIZATION.md` §2):
+`VIZ` (`none`|`window`|`udp`|`rviz`), ROS 2 — `ROS=true` (пошаговая инструкция
+по RViz — образ с `WITH_ROS2=1`, запуск, готовый конфиг
+`configs/mast3r_slam.rviz` — в `VISUALIZATION.md` §2; `VIZ=rviz` поднимает RViz
+прямо из этого контейнера рядом с пайплайном):
 
 ```bash
 cd /opt/MASt3R-SLAM-GST
@@ -213,6 +214,8 @@ bash deepstream-mast3r-slam/pipelines/run_slam.sh left.mp4 right.mp4 0.12 offroa
 # с визуализацией: окно (нужен проброс X11, шаг 2) или UDP-стрим оверлея
 VIZ=window bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
 VIZ=udp VIEW_HOST=<IP ноутбука> bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4
+# 3D-карта + трек в RViz из этого же контейнера (образ с WITH_ROS2=1 + X11):
+VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
 ```
 
 Специализированные скрипты (эквивалентные конфигурации, для справки):

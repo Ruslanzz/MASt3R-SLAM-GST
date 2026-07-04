@@ -18,6 +18,9 @@
 #   VIZ=window  HUD/trajectory overlay in an X11 window (VISUALIZATION.md 1b;
 #               SINK=egl|xv overrides the default autovideosink)
 #   VIZ=udp     overlay streamed as H264/RTP (VIEW_HOST/VIEW_PORT, def. 5600)
+#   VIZ=rviz    3D map + trajectory in RViz launched NEXT TO the pipeline in
+#               this container (image built WITH_ROS2=1; X11 like VIZ=window;
+#               RVIZ_CFG overrides configs/mast3r_slam.rviz); implies ROS=true
 #   ROS=true    publish odom/path/map/TF to ROS 2 (image built WITH_ROS2=1)
 #
 # Examples:
@@ -150,8 +153,32 @@ case "${VIZ}" in
            udpsink host="${VIEW_HOST:-127.0.0.1}" port="${VIEW_PORT:-5600}"
                sync=false)
     echo "[slam] overlay stream -> udp://${VIEW_HOST:-127.0.0.1}:${VIEW_PORT:-5600}" ;;
+  rviz)
+    # ROS bridge on + RViz window from this very container (VISUALIZATION.md 2.4).
+    TAIL=(! nvdsmast3rviz overlay=false ros-enable=true
+          ! nvvideoconvert ! fakesink sync=false) ;;
   *)
-    echo "unknown VIZ='${VIZ}' (use none|window|udp)" >&2; exit 1 ;;
+    echo "unknown VIZ='${VIZ}' (use none|window|udp|rviz)" >&2; exit 1 ;;
 esac
+
+RVIZ_PID=""
+if [ "${VIZ}" = "rviz" ]; then
+  ROS_SETUP="/opt/ros/humble/setup.bash"
+  RVIZ_CFG="${RVIZ_CFG:-${ROOT}/configs/mast3r_slam.rviz}"
+  if [ ! -f "${ROS_SETUP}" ]; then
+    echo "[slam] no ROS 2 in this image — rebuild with WITH_ROS2=1 (VISUALIZATION.md 2.1)" >&2
+    exit 1
+  fi
+  # ROS setup scripts are not `set -u`-clean.
+  set +u; . "${ROS_SETUP}"; set -u
+  if ! command -v rviz2 >/dev/null 2>&1; then
+    echo "[slam] rviz2 not found — image built with WITH_ROS2=1 before rviz2 was added; rebuild it" >&2
+    exit 1
+  fi
+  rviz2 -d "${RVIZ_CFG}" &
+  RVIZ_PID=$!
+  trap '[ -n "${RVIZ_PID}" ] && kill "${RVIZ_PID}" 2>/dev/null || true' EXIT
+  echo "[slam] rviz2 pid=${RVIZ_PID} config=${RVIZ_CFG} (DISPLAY=${DISPLAY:-<unset>})"
+fi
 
 gst-launch-1.0 -e "${PIPE[@]}" "${MUX[@]}" ! "${CORE[@]}" "${TAIL[@]}"

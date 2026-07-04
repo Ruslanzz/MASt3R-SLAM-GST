@@ -82,7 +82,8 @@ bash deepstream-mast3r-slam/pipelines/run_stereo_display.sh /dev/video0 /dev/vid
 ### 2.1. Собрать образ с ROS-мостом
 
 Мост компилируется опционально (в образ ставится ROS 2 Humble — родной для
-Ubuntu 22.04 базового образа DS 7.1):
+Ubuntu 22.04 базового образа DS 7.1 — **вместе с rviz2**, так что смотреть
+карту можно прямо из этого же контейнера, см. §2.4):
 
 ```bash
 WITH_ROS2=1 bash deepstream-mast3r-slam/docker/build.sh
@@ -100,6 +101,7 @@ WITH_ROS2=1 bash deepstream-mast3r-slam/docker/build.sh
 ROS=true bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
 ROS=true bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4   # моно
 # ROS можно совмещать с картинкой: VIZ=udp ROS=true ... / VIZ=window ROS=true ...
+# а VIZ=rviz (§2.4) сразу поднимает RViz рядом с пайплайном в этом контейнере
 ```
 
 ### 2.3. RViz на ноутбуке / другой машине в той же сети
@@ -128,7 +130,24 @@ rviz2 -d deepstream-mast3r-slam/configs/mast3r_slam.rviz
 **AxisColor** — в облаке только xyz, Decay Time = 3600), `/mast3r/odom`
 (Odometry: Keep = 1, Shape = Axes), TF.
 
-### 2.4. RViz без установки ROS на машину (docker)
+### 2.4. RViz прямо из контейнера MASt3R (`VIZ=rviz`)
+
+Самый короткий путь, если смотреть надо на той же машине: образ собран с
+`WITH_ROS2=1` (rviz2 уже внутри), контейнер запущен с пробросом X11 (§1b), и
+один запуск поднимает и пайплайн, и окно RViz с готовым конфигом:
+
+```bash
+VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
+VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4   # моно
+```
+
+`VIZ=rviz` сам включает `ros-enable=true`; rviz2 закрывается вместе со
+скриптом. Свой конфиг — `RVIZ_CFG=/path/my.rviz`. Рендер в контейнере
+программный (Mesa, без NVIDIA `graphics`-capability) — на частотах SLAM
+(1–3 FPS) это незаметно; если окно RViz падает по OpenGL, добавьте
+`LIBGL_ALWAYS_SOFTWARE=1`.
+
+### 2.5. RViz без установки ROS на машину (docker)
 
 ```bash
 xhost +local:
@@ -144,7 +163,7 @@ docker run --rm -it --network host \
 на той же машине, где крутится SLAM-контейнер, — DDS находит узлы через
 `--network host`.)
 
-### 2.5. Если топиков не видно
+### 2.6. Если топиков не видно
 
 * `ROS_DOMAIN_ID` должен совпадать с обеих сторон (не задан = 0);
 * `ROS_LOCALHOST_ONLY` не должен быть `1` ни с одной стороны;
