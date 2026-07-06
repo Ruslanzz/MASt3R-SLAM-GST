@@ -116,7 +116,14 @@ RUN chmod +x /usr/local/bin/mast3r-entrypoint.sh
 # --no-build-isolation: curope / lietorch / the backend import torch in setup.py.
 # FORCE_CUDA=1: docker build has no visible GPU, but nvcc compiles the kernels
 # fine (setup.py honors this override); arch comes from TORCH_CUDA_ARCH_LIST.
-RUN python3 -m pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r && \
+#
+# packaging>=24: the image ships a new setuptools whose editable-metadata path
+# calls canonicalize_version(..., strip_trailing_zero=...), a kwarg that only
+# exists in packaging>=24. With --no-build-isolation the build uses the env's
+# (older) packaging, so the mast3r editable install dies with
+# "canonicalize_version() got an unexpected keyword argument". Align it first.
+RUN python3 -m pip install --no-cache-dir -U "packaging>=24.0" && \
+    python3 -m pip install --no-cache-dir --no-build-isolation -e thirdparty/mast3r && \
     FORCE_CUDA=1 python3 -m pip install --no-cache-dir --no-build-isolation -e . && \
     python3 -m pip install --no-cache-dir onnx && \
     python3 -c "import mast3r.utils.path_to_dust3r, dust3r, mast3r_slam_backends, onnx; print('mast3r + dust3r + backend + onnx OK')"
