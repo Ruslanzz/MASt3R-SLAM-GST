@@ -63,13 +63,24 @@ RUN if [ "${WITH_ROS2}" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rclcpp ros-humble-nav-msgs ros-humble-sensor-msgs \
         ros-humble-geometry-msgs ros-humble-tf2-ros ros-humble-ros-environment \
-        ros-humble-rviz2 && \
+        ros-humble-rviz2 \
+        python3-ament-package && \
       rm -rf /var/lib/apt/lists/*; \
     fi
+# python3-ament-package: the ament_cmake machinery pulled in by
+# find_package(rclcpp) runs a Python script that imports ament_package. It is a
+# *recommends* of ament-cmake-core, so --no-install-recommends skips it and the
+# plugin cmake step dies with "No module named 'ament_package'". Name it
+# explicitly.
 
 # Build the plugin for Turing (sm_75). Torch_DIR points cmake at the pip libtorch.
+# bash (not sh) so `source /opt/ros/humble/setup.bash` works: the ament_cmake
+# machinery invoked by find_package(rclcpp) needs the ROS environment
+# (PYTHONPATH/AMENT_PREFIX_PATH), otherwise it fails to import ament_package.
+SHELL ["/bin/bash", "-c"]
 RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"share","cmake","Torch"))')" && \
     ROS_FLAGS=""; if [ "${WITH_ROS2}" = "1" ]; then \
+      source /opt/ros/humble/setup.bash && \
       ROS_FLAGS="-DWITH_ROS2=ON -DCMAKE_PREFIX_PATH=/opt/ros/humble"; fi && \
     cmake -S deepstream-mast3r-slam -B /tmp/build -GNinja \
         -DTorch_DIR="${Torch_DIR}" \
