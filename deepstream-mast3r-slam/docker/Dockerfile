@@ -50,6 +50,11 @@ RUN git submodule update --init --recursive || true
 # rates (1-3 FPS).
 ARG WITH_ROS2=0
 RUN if [ "${WITH_ROS2}" = "1" ]; then \
+      : "The DeepStream base image ships an Intel RealSense apt source whose" \
+        "signing key has since rotated, so apt-get update fails with" \
+        "'repository is not signed'. We don't use RealSense — drop the source." && \
+      (grep -rlE 'librealsense' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f || true) && \
+      (sed -i '/librealsense/d' /etc/apt/sources.list 2>/dev/null || true) && \
       apt-get update && apt-get install -y --no-install-recommends curl gnupg && \
       curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
         -o /usr/share/keyrings/ros-archive-keyring.gpg && \

@@ -333,6 +333,7 @@ num_keyframes, is_keyframe, mode`. Читается pad-probe'ом на src-па
 | `no element "nvvideoconvert"` / `"nvinfer"` в рантайме | реестр GStreamer с занесёнными в blacklist NVIDIA-плагинами (какой-то разбор плагинов прошёл без доступа к GPU — сборка образа, `docker run` без `--gpus all`, или гонка с драйвером). **В образах с entrypoint это лечится само**: при старте контейнера `mast3r-entrypoint.sh` проверяет `nvvideoconvert` и, если тот не грузится, чистит `~/.cache/gstreamer-1.0` и пересканирует уже с GPU. Если образ старый (без entrypoint) — вручную `rm -rf ~/.cache/gstreamer-1.0` и повторите. Если и после этого не грузится — контейнер запущен без `--gpus all`/`--runtime nvidia` |
 | `out of memory` / OOM на 1660 Ti | стройте движки в FP16 (шаг 3.3), уменьшите `--memPoolSize=workspace`, снизьте `MUX_W/MUX_H`, прореживайте кадры (см. §5b) |
 | `no kernel image is available` / незапуск ядер | движок/расширение собраны не под sm_75; пересоберите с `-DCMAKE_CUDA_ARCHITECTURES=75` и `TORCH_CUDA_ARCH_LIST=7.5` |
+| Сборка образа падает на `apt-get update`: `repository 'https://librealsense.intel.com/... ' is not signed` (`NO_PUBKEY`) | базовый образ DeepStream несёт apt-источник Intel RealSense с протухшим GPG-ключом. RealSense нам не нужен. В слое `WITH_ROS2` источник удаляется автоматически. Если то же падает на **базовом** `apt` (полностью чистая сборка без кэша) — удалите источник вручную перед сборкой или добавьте ту же очистку в первый `RUN apt` Dockerfile: `grep -rlE 'librealsense' /etc/apt/sources.list.d/ \| xargs -r rm -f` |
 
 ---
 
