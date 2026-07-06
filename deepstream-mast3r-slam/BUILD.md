@@ -215,7 +215,9 @@ bash deepstream-mast3r-slam/pipelines/run_slam.sh left.mp4 right.mp4 0.12 offroa
 VIZ=window bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
 VIZ=udp VIEW_HOST=<IP ноутбука> bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4
 # 3D-карта + трек в RViz из этого же контейнера (образ с WITH_ROS2=1 + X11):
-VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
+VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video2 0.12
+# ОДНА КАМЕРА + RViz одной командой (RViz открывается автоматически):
+bash deepstream-mast3r-slam/pipelines/run_mono_rviz.sh /dev/video0
 ```
 
 Специализированные скрипты (эквивалентные конфигурации, для справки):

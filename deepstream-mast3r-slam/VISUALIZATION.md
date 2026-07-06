@@ -134,11 +134,25 @@ rviz2 -d deepstream-mast3r-slam/configs/mast3r_slam.rviz
 
 Самый короткий путь, если смотреть надо на той же машине: образ собран с
 `WITH_ROS2=1` (rviz2 уже внутри), контейнер запущен с пробросом X11 (§1b), и
-один запуск поднимает и пайплайн, и окно RViz с готовым конфигом:
+один запуск поднимает и пайплайн, и окно RViz с готовым конфигом.
+
+**Одна камера — одной командой** (готовый скрипт, RViz открывается сам):
 
 ```bash
-VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video1 0.12
-VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4   # моно
+bash deepstream-mast3r-slam/pipelines/run_mono_rviz.sh /dev/video0
+# [seq] — необязательное имя выходных файлов; по умолчанию /dev/video0
+```
+
+Скрипт заранее проверяет, что `/dev/videoN` — именно video-capture, а не
+metadata-узел (частая ловушка UVC-камер, когда вторая нода отдаёт только
+метаданные), и подсказывает `v4l2-ctl --list-devices`, если выбран не тот узел.
+
+Общий вариант (моно/стерео, любой источник) — тот же режим через `VIZ=rviz`:
+
+```bash
+VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0            # моно
+VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /dev/video0 /dev/video2 0.12  # стерео
+VIZ=rviz bash deepstream-mast3r-slam/pipelines/run_slam.sh /path/video.mp4        # файл
 ```
 
 `VIZ=rviz` сам включает `ros-enable=true`; rviz2 закрывается вместе со
