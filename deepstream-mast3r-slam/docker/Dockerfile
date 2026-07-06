@@ -87,6 +87,14 @@ RUN export Torch_DIR="$(python3 -c 'import torch,os;print(os.path.join(os.path.d
 # load libcuda and get blacklisted; the stale blacklist would persist at
 # runtime ("no element nvvideoconvert"). A fresh scan happens on first use.
 
+# Belt-and-suspenders for the same blacklist problem: a self-healing entrypoint
+# that, on every container start, re-clears the registry if the NVIDIA plugins
+# are (still) not loadable — covers a registry re-poisoned at runtime (e.g. a
+# scan that raced the driver) that the build-time deletion above cannot. Kept in
+# /usr/local/bin so a `-v $PWD:/opt/MASt3R-SLAM-GST` mount can't shadow it.
+COPY deepstream-mast3r-slam/docker/entrypoint.sh /usr/local/bin/mast3r-entrypoint.sh
+RUN chmod +x /usr/local/bin/mast3r-entrypoint.sh
+
 # Python side for the ONNX export tooling (tools/export_onnx.py):
 # MASt3R (+dust3r, curope) and the repo package with its CUDA backend + lietorch.
 # --no-build-isolation: curope / lietorch / the backend import torch in setup.py.
@@ -98,4 +106,5 @@ RUN python3 -m pip install --no-cache-dir --no-build-isolation -e thirdparty/mas
     python3 -c "import mast3r.utils.path_to_dust3r, dust3r, mast3r_slam_backends, onnx; print('mast3r + dust3r + backend + onnx OK')"
 
 WORKDIR /opt/MASt3R-SLAM-GST
+ENTRYPOINT ["/usr/local/bin/mast3r-entrypoint.sh"]
 CMD ["bash"]
