@@ -1,7 +1,7 @@
 # Builds the nvdsmast3rslam GStreamer element + the SLAM core, reusing the
-# repository's CUDA kernels. Intended to be built inside the DeepStream 9.0
-# container (docker/Dockerfile), where GStreamer 1.24, CUDA, TensorRT, DeepStream
-# and libtorch are available.
+# repository's CUDA kernels. Intended to be built inside the DeepStream
+# container from docker/Dockerfile (this branch: DeepStream 7.1 / GStreamer
+# 1.20 / sm_75), where CUDA, TensorRT, DeepStream and libtorch are available.
 cmake_minimum_required(VERSION 3.18)
 project(nvdsmast3rslam LANGUAGES CXX CUDA)
 

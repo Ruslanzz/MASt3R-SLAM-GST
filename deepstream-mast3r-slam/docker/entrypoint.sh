@@ -19,15 +19,25 @@ set -euo pipefail
 # Registry lives under $GST_REGISTRY or $HOME/.cache/gstreamer-1.0. Cover both.
 CACHE_DIRS=("${HOME:-/root}/.cache/gstreamer-1.0" "/root/.cache/gstreamer-1.0")
 
-if ! gst-inspect-1.0 nvvideoconvert >/dev/null 2>&1; then
-  echo "[entrypoint] nvvideoconvert not loadable — clearing stale GStreamer registry" >&2
+# Probe one NVIDIA element AND our own plugin: either can be the blacklisted
+# one (nvvideoconvert after a GPU-less scan; nvdsmast3rslam after a load
+# failure whose cause has since been fixed, e.g. a replaced .so).
+probe_ok() {
+  gst-inspect-1.0 nvvideoconvert >/dev/null 2>&1 && \
+  gst-inspect-1.0 nvdsmast3rslam >/dev/null 2>&1
+}
+
+if ! probe_ok; then
+  echo "[entrypoint] nvvideoconvert/nvdsmast3rslam not loadable — clearing stale GStreamer registry" >&2
   for d in "${CACHE_DIRS[@]}"; do rm -rf "$d" 2>/dev/null || true; done
   # Rebuild now (GPU is present at runtime) so the first pipeline starts clean.
-  if gst-inspect-1.0 nvvideoconvert >/dev/null 2>&1; then
-    echo "[entrypoint] registry rebuilt — NVIDIA plugins OK" >&2
+  if probe_ok; then
+    echo "[entrypoint] registry rebuilt — NVIDIA plugins + nvdsmast3rslam OK" >&2
   else
-    echo "[entrypoint] WARNING: nvvideoconvert still not loadable after rescan;" \
-         "check that the container was started with --gpus all / --runtime nvidia" >&2
+    echo "[entrypoint] WARNING: still not loadable after a fresh rescan." >&2
+    echo "[entrypoint]   nvvideoconvert missing -> container started without --gpus all / --runtime nvidia" >&2
+    echo "[entrypoint]   nvdsmast3rslam missing -> see the real cause with:" >&2
+    echo "[entrypoint]   gst-inspect-1.0 \"\$(pkg-config --variable=pluginsdir gstreamer-1.0)/libnvdsmast3rslam.so\"" >&2
   fi
 fi
 

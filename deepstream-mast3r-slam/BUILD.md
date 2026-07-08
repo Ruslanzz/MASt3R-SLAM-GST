@@ -103,6 +103,9 @@ gst-inspect-1.0 nvdsmast3rslam      # должен показать свойст
 
 ### 2b. Пересборка после правок (внутри контейнера, без пересборки образа)
 
+Если в образе есть ROS 2 (собран `WITH_ROS2=1`), скрипт сам включит ROS-мост,
+чтобы пересборка не подменила плагин версией без ROS (отключить: `WITH_ROS2=0`).
+
 ```bash
 bash deepstream-mast3r-slam/build_local.sh
 # GStreamer plugin dir (DeepStream 7.1 uses the system dir, not lib/gstreamer-1.0):

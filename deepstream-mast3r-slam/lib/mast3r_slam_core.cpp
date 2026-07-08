@@ -624,8 +624,9 @@ struct Mast3rSlamCore::Impl {
       updatePointmap(kf.X_canon, kf.C, kf.N, X, C);
       keyframes.push_back(std::move(kf));
       onNewKeyframe();
-      mode = 1;
+      /* report INIT for this frame (fillPose reads `mode`), then switch */
       fillPose(res, keyframes.back().T_WC, /*kf=*/true);
+      mode = 1;
       frame_count++;
       return res;
     }
