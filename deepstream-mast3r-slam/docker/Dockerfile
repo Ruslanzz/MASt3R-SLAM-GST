@@ -64,7 +64,7 @@ RUN if [ "${WITH_ROS2}" = "1" ]; then \
         ros-humble-rclcpp ros-humble-nav-msgs ros-humble-sensor-msgs \
         ros-humble-geometry-msgs ros-humble-tf2-ros ros-humble-ros-environment \
         ros-humble-rviz2 \
-        python3-ament-package && \
+        python3-ament-package ros-humble-ament-cmake && \
       rm -rf /var/lib/apt/lists/*; \
     fi
 # python3-ament-package: the ament_cmake machinery pulled in by
@@ -72,6 +72,9 @@ RUN if [ "${WITH_ROS2}" = "1" ]; then \
 # *recommends* of ament-cmake-core, so --no-install-recommends skips it and the
 # plugin cmake step dies with "No module named 'ament_package'". Name it
 # explicitly.
+# ros-humble-ament-cmake: provides find_package(ament_cmake) + the
+# ament_target_dependencies() macro used to link rclcpp (and its transitive
+# libs) correctly in CMakeLists.txt.
 
 # Build the plugin for Turing (sm_75). Torch_DIR points cmake at the pip libtorch.
 # bash (not sh) so `source /opt/ros/humble/setup.bash` works: the ament_cmake

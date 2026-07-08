@@ -62,24 +62,24 @@ add_library(nvdsmast3rslam SHARED
 #   -DWITH_ROS2=ON -DCMAKE_PREFIX_PATH=/opt/ros/humble
 option(WITH_ROS2 "Build the ROS 2 bridge into nvdsmast3rviz" OFF)
 if(WITH_ROS2)
+  find_package(ament_cmake REQUIRED)   # provides ament_target_dependencies()
   find_package(rclcpp REQUIRED)
   find_package(nav_msgs REQUIRED)
   find_package(sensor_msgs REQUIRED)
   find_package(geometry_msgs REQUIRED)
   find_package(tf2_ros REQUIRED)
   target_compile_definitions(nvdsmast3rslam PRIVATE WITH_ROS2)
-  # -Wl,--no-as-needed around the ROS libs: Ubuntu links with --as-needed by
-  # default, which dropped librclcpp.so from DT_NEEDED — the symbols it provides
-  # (e.g. rclcpp::exceptions::throw_from_rcl_error) are referenced only from
-  # inlined template code, so the linker saw no "direct" need and discarded the
-  # library. The plugin then failed to dlopen at runtime with
-  # "undefined symbol: ...throw_from_rcl_error..." and GStreamer reported
-  # "no element nvdsmast3rslam". Forcing the libraries to stay linked fixes it.
-  target_link_libraries(nvdsmast3rslam PRIVATE
-    -Wl,--no-as-needed
-    rclcpp::rclcpp tf2_ros::tf2_ros
-    ${nav_msgs_TARGETS} ${sensor_msgs_TARGETS} ${geometry_msgs_TARGETS}
-    -Wl,--as-needed)
+  # Link ROS 2 the canonical ament way. The bare `rclcpp::rclcpp` imported
+  # target does NOT drag in librclcpp.so itself, so it never entered DT_NEEDED
+  # and the plugin failed to dlopen with
+  # "undefined symbol: rclcpp::exceptions::throw_from_rcl_error".
+  # ament_target_dependencies() adds each package's libraries (rclcpp + the
+  # transitive rcl/rcutils/rmw/...) by absolute path with the right order.
+  # --no-as-needed keeps them in DT_NEEDED even though the symbols are only
+  # referenced from inlined rclcpp template code (Ubuntu links --as-needed).
+  target_link_options(nvdsmast3rslam PRIVATE "LINKER:--no-as-needed")
+  ament_target_dependencies(nvdsmast3rslam
+    rclcpp tf2_ros nav_msgs sensor_msgs geometry_msgs)
 endif()
 
 target_include_directories(nvdsmast3rslam PRIVATE
