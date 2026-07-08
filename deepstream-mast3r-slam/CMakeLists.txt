@@ -68,9 +68,18 @@ if(WITH_ROS2)
   find_package(geometry_msgs REQUIRED)
   find_package(tf2_ros REQUIRED)
   target_compile_definitions(nvdsmast3rslam PRIVATE WITH_ROS2)
+  # -Wl,--no-as-needed around the ROS libs: Ubuntu links with --as-needed by
+  # default, which dropped librclcpp.so from DT_NEEDED — the symbols it provides
+  # (e.g. rclcpp::exceptions::throw_from_rcl_error) are referenced only from
+  # inlined template code, so the linker saw no "direct" need and discarded the
+  # library. The plugin then failed to dlopen at runtime with
+  # "undefined symbol: ...throw_from_rcl_error..." and GStreamer reported
+  # "no element nvdsmast3rslam". Forcing the libraries to stay linked fixes it.
   target_link_libraries(nvdsmast3rslam PRIVATE
+    -Wl,--no-as-needed
     rclcpp::rclcpp tf2_ros::tf2_ros
-    ${nav_msgs_TARGETS} ${sensor_msgs_TARGETS} ${geometry_msgs_TARGETS})
+    ${nav_msgs_TARGETS} ${sensor_msgs_TARGETS} ${geometry_msgs_TARGETS}
+    -Wl,--as-needed)
 endif()
 
 target_include_directories(nvdsmast3rslam PRIVATE
