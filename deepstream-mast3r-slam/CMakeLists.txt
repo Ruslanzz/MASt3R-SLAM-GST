@@ -99,7 +99,11 @@ target_link_directories(nvdsmast3rslam PRIVATE
   ${DEEPSTREAM_DIR}/lib
 )
 
-target_link_libraries(nvdsmast3rslam PRIVATE
+# Plain (keyword-less) signature on purpose: ament_target_dependencies() above
+# links with the plain signature internally, and CMake forbids mixing plain and
+# keyword (PRIVATE/PUBLIC) target_link_libraries calls on one target. For a
+# terminal plugin .so that nothing links against, the semantics are identical.
+target_link_libraries(nvdsmast3rslam
   ${GST_LIBRARIES}
   ${TORCH_LIBRARIES}
   CUDA::cudart
