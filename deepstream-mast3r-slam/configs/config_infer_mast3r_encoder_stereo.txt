@@ -1,0 +1,33 @@
+# gst-nvinfer configuration: MASt3R ViT encoder for the STEREO-HYBRID mode.
+#
+# nvstreammux delivers left+right frames in one batch; nvinfer chunks the batch
+# by its own batch-size, so with batch-size=1 it simply runs the encoder twice
+# per stereo pair and attaches feat/pos tensor meta to EACH frame. This is the
+# safe default: it reuses the standard single-batch engine unchanged.
+#
+# Optional speed-up (validate on target!): export the encoder with a dynamic
+# batch axis and build a b2 engine, then set batch-size=2 below:
+#   python3 deepstream-mast3r-slam/tools/export_onnx.py --which encoder \
+#       --dynamic-batch --out-encoder checkpoints/mast3r_encoder_dyn.onnx
+#   trtexec --onnx=checkpoints/mast3r_encoder_dyn.onnx \
+#       --saveEngine=checkpoints/mast3r_encoder_b2.engine --fp16 \
+#       --memPoolSize=workspace:2048 \
+#       --minShapes=img:1x3x384x512 --optShapes=img:2x3x384x512 \
+#       --maxShapes=img:2x3x384x512
+
+[property]
+gpu-id=0
+net-scale-factor=0.0078431373
+offsets=127.5;127.5;127.5
+model-color-format=0           # 0=RGB
+onnx-file=../../checkpoints/mast3r_encoder.onnx
+model-engine-file=../../checkpoints/mast3r_encoder.engine
+infer-dims=3;384;512           # CHW; must match the exported encoder
+network-mode=2                 # FP16 (6 GB card)
+network-type=100               # raw tensor output
+output-tensor-meta=1
+output-blob-names=feat;pos
+gie-unique-id=1
+process-mode=1
+maintain-aspect-ratio=0
+batch-size=1                   # safe default; see header for the b2 variant

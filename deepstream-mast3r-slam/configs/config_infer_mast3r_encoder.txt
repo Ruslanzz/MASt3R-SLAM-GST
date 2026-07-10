@@ -1,0 +1,34 @@
+# gst-nvinfer configuration: MASt3R ViT encoder, raw tensor output.
+#
+# nvinfer runs the encoder engine per frame and attaches feat/pos as
+# NvDsInferTensorMeta (output-tensor-meta=1). The nvdsmast3rslam element
+# (gie-unique-id matched via its infer-gie-id property) consumes them.
+#
+# Preprocessing: dust3r/CroCo ImgNorm = (x/255 - 0.5)/0.5 = (x - 127.5)/127.5,
+# which is uniform across channels, so nvinfer reproduces it exactly with
+# net-scale-factor = 1/127.5 and per-channel offsets 127.5.
+#
+# CAVEAT: nvinfer's resize does not replicate MASt3R's long-edge-512 + center-crop
+# resize. For a fixed camera, set infer-dims to the resized model input and feed a
+# matching resolution upstream (nvvideoconvert), or pre-crop. See DESIGN.md.
+
+[property]
+gpu-id=0
+net-scale-factor=0.0078431373
+offsets=127.5;127.5;127.5
+model-color-format=0           # 0=RGB
+onnx-file=../../checkpoints/mast3r_encoder.onnx
+model-engine-file=../../checkpoints/mast3r_encoder.engine
+infer-dims=3;384;512           # CHW; must match the exported encoder
+# GTX 1660 Ti has only 6 GB, so FP16 is recommended to halve engine + activation
+# memory (Turing runs FP16 on CUDA cores; expect memory savings rather than a big
+# speedup, since TU116 has no tensor cores). Use network-mode=0 (FP32) only if
+# VRAM allows and you need closest parity with the reference.
+network-mode=2                 # 0=FP32, 1=INT8, 2=FP16
+network-type=100               # 100 = other (raw output, no parsing/clustering)
+output-tensor-meta=1
+output-blob-names=feat;pos
+gie-unique-id=1
+process-mode=1                 # 1 = full frame (primary)
+maintain-aspect-ratio=0
+batch-size=1
